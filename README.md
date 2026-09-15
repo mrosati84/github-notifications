@@ -4,8 +4,8 @@ Unread GitHub notifications in the Omarchy bar, read through the `gh` CLI.
 
 <table>
     <tr>
-    <td><img src="notif-1.png"></td>
-    <td><img src="notif-2.png"></td>
+    <td><img src="screenshots/notif-1.png"></td>
+    <td><img src="screenshots/notif-2.png"></td>
     </tr>
 </table>
 
