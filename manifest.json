@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.mrosati84.github-notifications",
+  "name": "GitHub Notifications",
+  "version": "1.0.0",
+  "author": "Matteo Rosati",
+  "license": "MIT",
+  "description": "Unread GitHub notifications in the Omarchy bar. The GitHub mark is lit while `gh api notifications` has something for you and dimmed when the inbox is quiet; clicking it lists every notification with separate links to the repository and to the subject.",
+  "keywords": ["github", "notifications", "inbox", "gh", "developer"],
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "GitHub Notifications",
+    "description": "Unread GitHub notifications via the gh CLI",
+    "category": "Developer Tools",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "intervalSeconds": 300,
+      "subjectLinks": "api"
+    },
+    "schema": [
+      {
+        "key": "intervalSeconds",
+        "type": "integer",
+        "label": "Check interval (seconds)",
+        "min": 60,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300
+      },
+      {
+        "key": "subjectLinks",
+        "type": "enum",
+        "label": "Subject link target",
+        "options": ["api", "web"],
+        "defaultValue": "api",
+        "description": "api opens subject.url exactly as gh returns it (api.github.com). A browser fetches that unauthenticated, so it is charged to GitHub's 60-requests-per-hour budget per IP address and shows raw JSON (404 for a private repository). web rewrites it to the matching github.com page and costs no API request at all."
+      }
+    ]
+  }
+}
