@@ -23,24 +23,37 @@ Only four fields of the API answer are used, exactly as specified:
 
 ## Install
 
-Already in place if you are reading this from your own config:
-
 ```bash
-ls ~/.config/omarchy/plugins/io.github.mrosati84.github-notifications
+omarchy plugin add https://github.com/mrosati84/github-notifications.git --enable
 ```
 
-To enable it (adds it to the bar's right section):
+`--enable` also adds it to the bar's `right` section. Drop the flag to add it
+without enabling, and enable it later from your own config:
 
 ```bash
 omarchy plugin enable io.github.mrosati84.github-notifications
 omarchy bar move io.github.mrosati84.github-notifications --section right   # optional
 ```
 
-To move or remove it again:
+To move it to another bar section:
 
 ```bash
 omarchy bar move io.github.mrosati84.github-notifications --section right
+```
+
+## Removal
+
+Disable it to stop it and drop it from the bar:
+
+```bash
 omarchy plugin disable io.github.mrosati84.github-notifications
+```
+
+Delete it entirely (removes
+`~/.config/omarchy/plugins/io.github.mrosati84.github-notifications`):
+
+```bash
+omarchy plugin remove io.github.mrosati84.github-notifications
 ```
 
 ## Settings
@@ -52,14 +65,14 @@ Edit the file (it hot-reloads) or use the Settings panel.
 {
   "id": "io.github.mrosati84.github-notifications",
   "intervalSeconds": 300,
-  "subjectLinks": "api"
+  "subjectLinks": "web"
 }
 ```
 
 | Setting           | Default | Meaning                                                              |
 | ----------------- | ------- | -------------------------------------------------------------------- |
 | `intervalSeconds` | `300`   | How often the widget checks. Clamped to 60–3600.                     |
-| `subjectLinks`    | `"api"` | Where the subject title opens. This install sets `"web"`. See below. |
+| `subjectLinks`    | `"web"` | Where the subject title opens. See below.                            |
 
 ### `subjectLinks`: the one thing worth deciding
 
@@ -77,7 +90,7 @@ things go wrong when a browser opens one:
 
 | Value                                             | A click opens                                       | API cost            |
 | ------------------------------------------------- | --------------------------------------------------- | ------------------- |
-| `"web"` (recommended, and what this install uses) | `https://github.com/OWNER/REPO/issues/42`           | none                |
+| `"web"` (recommended, and the default)            | `https://github.com/OWNER/REPO/issues/42`           | none                |
 | `"api"`                                           | `https://api.github.com/repos/OWNER/REPO/issues/42` | 1 anonymous request |
 
 Issues, pull requests, discussions, releases, commits and check suites are
@@ -167,3 +180,7 @@ signed in.
 **not**: it is loaded as a QML type and the type cache survives a plugin reload,
 so changes to it need `omarchy restart shell` before they show up. Same for
 `assets/github.svg`.
+
+## License
+
+MIT
