@@ -2,6 +2,13 @@
 
 Unread GitHub notifications in the Omarchy bar, read through the `gh` CLI.
 
+<table>
+    <tr>
+    <td><img src="notif-1.png"></td>
+    <td><img src="notif-2.png"></td>
+    </tr>
+</table>
+
 The GitHub mark is **lit** while `gh api notifications` has something for you
 and **dimmed** while the inbox is quiet. Clicking it opens the list, where every
 notification offers two separate links: the repository name and the subject
@@ -69,10 +76,10 @@ Edit the file (it hot-reloads) or use the Settings panel.
 }
 ```
 
-| Setting           | Default | Meaning                                                              |
-| ----------------- | ------- | -------------------------------------------------------------------- |
-| `intervalSeconds` | `300`   | How often the widget checks. Clamped to 60–3600.                     |
-| `subjectLinks`    | `"web"` | Where the subject title opens. See below.                            |
+| Setting           | Default | Meaning                                          |
+| ----------------- | ------- | ------------------------------------------------ |
+| `intervalSeconds` | `300`   | How often the widget checks. Clamped to 60–3600. |
+| `subjectLinks`    | `"web"` | Where the subject title opens. See below.        |
 
 ### `subjectLinks`: the one thing worth deciding
 
@@ -88,10 +95,10 @@ things go wrong when a browser opens one:
   On a shared or office IP that anonymous budget is shared with everyone else on
   the address, so a handful of clicks can already read as rate limited.
 
-| Value                                             | A click opens                                       | API cost            |
-| ------------------------------------------------- | --------------------------------------------------- | ------------------- |
-| `"web"` (recommended, and the default)            | `https://github.com/OWNER/REPO/issues/42`           | none                |
-| `"api"`                                           | `https://api.github.com/repos/OWNER/REPO/issues/42` | 1 anonymous request |
+| Value                                  | A click opens                                       | API cost            |
+| -------------------------------------- | --------------------------------------------------- | ------------------- |
+| `"web"` (recommended, and the default) | `https://github.com/OWNER/REPO/issues/42`           | none                |
+| `"api"`                                | `https://api.github.com/repos/OWNER/REPO/issues/42` | 1 anonymous request |
 
 Issues, pull requests, discussions, releases, commits and check suites are
 rewritten; anything unrecognised falls back to the URL `gh` returned. The
