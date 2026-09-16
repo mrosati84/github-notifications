@@ -1,6 +1,9 @@
 # GitHub Notifications
 
-Unread GitHub notifications in the Omarchy bar, read through the `gh` CLI.
+Your unread GitHub notifications, right in the Omarchy bar. When something is
+waiting for you the GitHub mark lights up; when your inbox is quiet it dims.
+Click the mark and a small panel drops down listing what's new, so you can see at
+a glance whether anything needs your attention.
 
 <table>
     <tr>
@@ -9,64 +12,70 @@ Unread GitHub notifications in the Omarchy bar, read through the `gh` CLI.
     </tr>
 </table>
 
-The GitHub mark is **lit** while `gh api notifications` has something for you
-and **dimmed** while the inbox is quiet. Clicking it opens the list, where every
-notification offers two separate links: the repository name and the subject
-title.
-
-```
-gh api notifications  ──►  one bar icon  ──►  one panel
- (every 5 minutes)          lit / unlit         repo + subject links
-```
-
-Only four fields of the API answer are used, exactly as specified:
-`repository.name`, `repository.html_url`, `subject.title`, `subject.url`.
-
-## Requirements
-
-- `gh` on `PATH` and signed in: `gh auth status` should succeed.
-  The widget runs `gh` through `bash -lc`, so the login-shell `PATH` applies.
-- Nothing else. No token is stored by this plugin; `gh` keeps its own.
-
 ## Install
+
+You need the GitHub CLI (`gh`) installed and signed in — the plugin reads your
+notifications through it. Then run:
 
 ```bash
 omarchy plugin add https://github.com/mrosati84/github-notifications.git --enable
 ```
 
-`--enable` also adds it to the bar's `right` section. Drop the flag to add it
-without enabling, and enable it later from your own config:
+The `--enable` flag does the extra step of adding the widget to your bar for you.
+Without it the widget is installed but stays hidden until you enable it yourself,
+either from the Settings panel or from your bar config.
 
-```bash
-omarchy plugin enable io.github.mrosati84.github-notifications
-omarchy bar move io.github.mrosati84.github-notifications --section right   # optional
-```
+For the commands below, the plugin's id is
+`io.github.mrosati84.github-notifications`.
 
-To move it to another bar section:
+## Using it
 
-```bash
-omarchy bar move io.github.mrosati84.github-notifications --section right
-```
+Click the GitHub mark in the bar to open the notification list.
 
-## Removal
+| Input        | What it does                                  |
+| ------------ | --------------------------------------------- |
+| Left click   | Open or close the notification list.          |
+| Middle click | Check for new notifications right now.        |
+| Right click  | Open github.com/notifications in your browser. |
 
-Disable it to stop it and drop it from the bar:
+Each row has two separate links: the repository name and the subject title.
+Click either one and it opens in your browser. The panel stays open on purpose,
+so you can follow one link, then the other, without reopening the list.
 
-```bash
-omarchy plugin disable io.github.mrosati84.github-notifications
-```
+### With the keyboard
 
-Delete it entirely (removes
-`~/.config/omarchy/plugins/io.github.mrosati84.github-notifications`):
+| Key                   | What it does                              |
+| --------------------- | ----------------------------------------- |
+| `↑` `↓` or `j` `k`    | Move the row cursor.                      |
+| `Enter` or `Space`    | Open the subject of the highlighted row.  |
+| `o`                   | Open the repository of the highlighted row. |
+| `r`                   | Refresh now.                              |
+| `Esc`                 | Close the panel.                          |
 
-```bash
-omarchy plugin remove io.github.mrosati84.github-notifications
-```
+Hovering a row moves the same cursor, so the mouse and the keyboard always point
+at one highlighted row.
+
+### Pages
+
+Notifications are shown newest first, in pages of five. When there is more than
+one page, a page control appears at the bottom of the panel:
+
+- click a page number to jump straight to it;
+- the left and right chevrons step one page at a time;
+- `[` and `]` do the same from the keyboard.
 
 ## Settings
 
-Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`.
-Edit the file (it hot-reloads) or use the Settings panel.
+Settings live on the plugin's entry in `~/.config/omarchy/shell.json` or in the
+Settings panel. Changes take effect right away — there is no need to restart the
+shell.
+
+| Setting           | Default | What it does                                                                                                       |
+| ----------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `intervalSeconds` | `300`   | How often to check for new notifications, in seconds. Defaults to 5 minutes; values outside 60–3600 are clamped in. |
+| `subjectLinks`    | `"web"` | Where the subject title opens. Leave it on `"web"`.                                                                 |
+
+A settings snippet looks like this:
 
 ```json
 {
@@ -76,79 +85,39 @@ Edit the file (it hot-reloads) or use the Settings panel.
 }
 ```
 
-| Setting           | Default | Meaning                                          |
-| ----------------- | ------- | ------------------------------------------------ |
-| `intervalSeconds` | `300`   | How often the widget checks. Clamped to 60–3600. |
-| `subjectLinks`    | `"web"` | Where the subject title opens. See below.        |
+`subjectLinks` is the one setting worth a sentence. With `"web"` (the default,
+and the recommended choice), clicking a subject opens the real GitHub web page.
+With `"api"`, it opens the raw API address instead, which shows raw JSON — and a
+404 for a private repository — and spends one of GitHub's limited unauthenticated
+requests. For almost everyone, `"web"` is the right pick.
 
-### `subjectLinks`: the one thing worth deciding
+## Removal
 
-`subject.url` from the API is an **api.github.com** URL, not a web page, and two
-things go wrong when a browser opens one:
+Stop the widget and take it off the bar, while keeping it installed:
 
-- It shows raw JSON — and 404 JSON for a private repository, because a browser
-  request carries no token.
-- It is an **unauthenticated** request, so it is charged to the 60 requests per
-  hour that GitHub grants per _IP address_, not per user. Authenticated calls —
-  `gh`, which this widget's polling already uses — get 5,000 per hour. See
-  [rate limits for the REST API](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
-  On a shared or office IP that anonymous budget is shared with everyone else on
-  the address, so a handful of clicks can already read as rate limited.
-
-| Value                                  | A click opens                                       | API cost            |
-| -------------------------------------- | --------------------------------------------------- | ------------------- |
-| `"web"` (recommended, and the default) | `https://github.com/OWNER/REPO/issues/42`           | none                |
-| `"api"`                                | `https://api.github.com/repos/OWNER/REPO/issues/42` | 1 anonymous request |
-
-Issues, pull requests, discussions, releases, commits and check suites are
-rewritten; anything unrecognised falls back to the URL `gh` returned. The
-repository link is unaffected: `repository.html_url` is already a web page.
-
-```json
-{ "id": "io.github.mrosati84.github-notifications", "subjectLinks": "web" }
+```bash
+omarchy plugin disable io.github.mrosati84.github-notifications
 ```
 
-## Using it
+Delete it completely, including its files:
 
-| Input               | Effect                                       |
-| ------------------- | -------------------------------------------- |
-| left click          | open / close the list                        |
-| middle click        | check right now                              |
-| right click         | open github.com/notifications in the browser |
-| `↑` `↓` / `j` `k`   | move the row cursor                          |
-| `←` `→`             | scroll the list                              |
-| `Enter` / `Space`   | open the subject of the cursor row           |
-| `o`                 | open the repository of the cursor row        |
-| `r`                 | check right now                              |
-| `[` / `]`           | previous / next page                         |
-| `Esc`               | close                                        |
-| `Tab` / `Shift+Tab` | next / previous panel in the bar             |
+```bash
+omarchy plugin remove io.github.mrosati84.github-notifications
+```
 
-Hovering a row moves the same cursor the keyboard uses, so there is only ever
-one highlighted row. The repository line and the subject line are separate click
-targets inside it.
+## For developers
 
-Clicking a link leaves the panel open on purpose, so both links of a row can be
-used in one visit.
+The plugin is small. `Model.js` holds the pure logic (parsing, link rewriting,
+failure text), `BarWidget.qml` polls and draws the bar mark, and `Panel.qml`
+renders the popup and its pagination. `GitHubMark.qml` is the tinted mark.
 
-## Pagination
+Each fetch is deliberately bounded — one page of 5 notifications plus a one-item
+`--include` probe for the exact unread total, both capped with `head -c` — so an
+inbox of any size costs the same two reads. Only one fetch per instance is ever
+in flight; an overlapping check is skipped. `gh` is reached through `bash -lc`,
+so the login-shell `PATH` applies. Nothing is ever marked read.
 
-Notifications are shown in pages of **5**, newest first. When the inbox spans
-more than one page, a pagination control appears at the bottom of the panel: a
-previous and a next chevron around a bounded run of page-number tokens. A `...`
-token stands in for a run of skipped pages, and the current page is marked in
-the accent colour.
-
-- click a page number to jump straight to it;
-- the chevrons move one page and are greyed out on the first and last page;
-- `[` and `]` are the keyboard equivalents of previous and next;
-- only the page on screen is fetched — the widget never walks the whole inbox.
-
-The five-minute check keeps you on the page you are reading. Opening the panel
-(or pressing `r`, or middle-clicking the icon) is a full check and starts again
-from page 1.
-
-## IPC
+IPC commands:
 
 ```bash
 omarchy-shell io.github.mrosati84.github-notifications toggle
@@ -157,60 +126,16 @@ omarchy-shell io.github.mrosati84.github-notifications close
 omarchy-shell io.github.mrosati84.github-notifications refresh
 ```
 
-## Behaviour details
-
-- **One gh call per instance, never overlapping.** A check is skipped while the
-  previous one is still in flight. A call that does not answer within 60 s is
-  cut loose and reported, so the widget can never wedge on a hung process.
-- **Notifications are not marked as read.** This widget only reads.
-- **A failed check keeps the last list.** The panel shows the error, labels the
-  list as stale ("Showing the last list that loaded", "Last good check 21:45")
-  and leaves the icon's lit state alone until a check succeeds.
-- **The fetch is bounded to one page at a time.** Each check reads one page of
-  5 (`per_page=5`) plus a one-item `--include` probe whose `Link` header
-  carries the exact unread total, so an inbox of any size costs the same two
-  reads and downloads at most one page of JSON. Both streams are capped at the
-  shell (`head -c`: 8 KiB of stderr, 256 KiB of stdout), so a runaway response
-  can never be buffered whole. There is no `--paginate`/`--slurp`.
-- **The bar exists per monitor**, so on a two-screen desktop the check runs once
-  per instance. Two requests every five minutes is well inside the API rate
-  limit, and each instance keeps its own panel state.
-- **Errors are translated.** "not installed", "not authenticated (run
-  `gh auth login`)", "rate limit reached", "could not reach github.com", HTTP
-  401/404/5xx each get their own sentence instead of a raw stack of text.
-
-## Files
-
-| File                | Role                                                                    |
-| ------------------- | ----------------------------------------------------------------------- |
-| `manifest.json`     | plugin manifest (`bar-widget`, entry point, settings schema)            |
-| `BarWidget.qml`     | polling (Timer + Process), bar icon, click handling, IPC target         |
-| `Panel.qml`         | the popup: header, notification rows with two links each, pagination, footer |
-| `GitHubMark.qml`    | the SVG mark, tinted to the theme, lit or dimmed                        |
-| `assets/github.svg` | the GitHub mark itself (white; tinted at render time)                   |
-| `Model.js`          | pure logic: parsing, link rewriting, URL safety, failure text, display strings |
-| `test-model.js`     | node self-check for `Model.js` (50 tests, includes one live round-trip) |
-| `pagination-specs.md` | the framework-independent pagination spec the frame algorithm implements, plus the GitHub transport/bounds appendix |
-| `screenshots/`      | README screenshots (`notif-1.png`, `notif-2.png`)                       |
-| `LICENSE`           | MIT                                                                     |
-
-## Testing
+Testing:
 
 ```bash
-cd ~/.config/omarchy/plugins/io.github.mrosati84.github-notifications
-node test-model.js          # pure logic + a live `gh api notifications` round-trip
+node test-model.js
 omarchy plugin validate .
 ```
 
-The live test skips itself, rather than failing, when `gh` is missing or not
-signed in.
-
-## Editing it
-
-`BarWidget.qml` and `Panel.qml` hot-reload when saved. `GitHubMark.qml` does
-**not**: it is loaded as a QML type and the type cache survives a plugin reload,
-so changes to it need `omarchy restart shell` before they show up. Same for
-`assets/github.svg`.
+`BarWidget.qml` and `Panel.qml` hot-reload when saved. `GitHubMark.qml` and
+`assets/github.svg` do not — the QML type cache survives a plugin reload, so run
+`omarchy restart shell` to pick up changes to those.
 
 ## License
 
