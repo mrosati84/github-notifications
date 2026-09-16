@@ -27,6 +27,9 @@ Panel {
 
     property bool cursorActive: false
     property int focusIndex: 0
+    // Set when the panel opens with no rows yet: the cursor is placed on the
+    // first row as soon as the list arrives while the panel is still open.
+    property bool awaitingFirstRows: false
 
     readonly property color foreground: bar ? bar.foreground : Color.foreground
     readonly property color dim: Qt.darker(foreground, 1.5)
@@ -109,6 +112,16 @@ Panel {
         root.focusIndex = index;
     }
 
+    // Opening the panel should start the cursor on the first notification, so
+    // arrow keys move to the second rather than skipping the first. An empty
+    // list leaves the cursor inactive until rows arrive.
+    function applyOpenCursor() {
+        var cursor = Model.cursorForRows(root.rowCount);
+        root.cursorActive = cursor.active;
+        root.focusIndex = cursor.index;
+        root.awaitingFirstRows = !cursor.active;
+    }
+
     function moveCursor(step) {
         if (root.rowCount === 0)
             return;
@@ -138,13 +151,20 @@ Panel {
     onOpenedChanged: {
         if (!opened)
             return;
-        root.cursorActive = false;
-        root.focusIndex = 0;
+        root.applyOpenCursor();
         // The host widget owns the fetch and refreshes once in its own open()
         // path; refreshing here as well would queue a second sequential fetch.
         Qt.callLater(function () {
             keyCatcher.forceActiveFocus();
         });
+    }
+
+    // The list can arrive after an empty open; select its first row then.
+    onRowCountChanged: {
+        if (root.opened && root.awaitingFirstRows && root.rowCount > 0) {
+            root.applyOpenCursor();
+            root.scrollToFocused();
+        }
     }
 
     // A new page is a new list: drop the cursor highlight and scroll back to the

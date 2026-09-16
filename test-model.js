@@ -1129,6 +1129,17 @@ test("frames mirror consistently except the (9,5) tie", () => {
   );
 });
 
+test("the open cursor follows the row count", () => {
+  assert.deepStrictEqual(M.cursorForRows(0), { active: false, index: 0 });
+  assert.deepStrictEqual(M.cursorForRows(1), { active: true, index: 0 });
+  assert.deepStrictEqual(M.cursorForRows(5), { active: true, index: 0 });
+  assert.deepStrictEqual(M.cursorForRows(-3), { active: false, index: 0 });
+  assert.deepStrictEqual(M.cursorForRows(undefined), {
+    active: false,
+    index: 0,
+  });
+});
+
 // --------------------------------------------------------------------------
 // live round-trip (skipped when gh is unavailable or not signed in)
 

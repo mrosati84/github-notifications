@@ -463,6 +463,15 @@ function canNextPage(page, totalPages) {
   return Number(page) < Number(totalPages);
 }
 
+// The row cursor to place when the panel opens (or when the first list arrives
+// after an empty open). Arrow keys should start on the first notification
+// rather than skip it, so any non-empty list opens with row 0 selected; an
+// empty list has nothing to select.
+function cursorForRows(rowCount) {
+  var count = Number(rowCount);
+  return { active: isFinite(count) && count > 0, index: 0 };
+}
+
 // ---------------------------------------------------------------------------
 // state
 
@@ -780,6 +789,7 @@ if (typeof module !== "undefined") {
     paginationVisible: paginationVisible,
     canPreviousPage: canPreviousPage,
     canNextPage: canNextPage,
+    cursorForRows: cursorForRows,
     apiToWebUrl: apiToWebUrl,
     repoLink: repoLink,
     subjectLink: subjectLink,
