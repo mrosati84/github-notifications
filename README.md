@@ -55,6 +55,28 @@ so you can follow one link, then the other, without reopening the list.
 Hovering a row moves the same cursor, so the mouse and the keyboard always point
 at one highlighted row.
 
+### Opening it with a global keybinding
+
+The panel is driven through the shell's IPC, so you can give it a Hyprland
+keybinding and open it from anywhere. Add a line to
+`~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("SUPER + SHIFT + I", "GitHub notifications",
+  "omarchy-shell io.github.mrosati84.github-notifications toggle")
+```
+
+`toggle` opens the panel when it is closed and closes it when it is open; use
+`open`, `close`, or `refresh` for a different action. Pick a key that is not
+already taken (`omarchy menu keybindings --print` lists them), then apply it:
+
+```bash
+hyprctl reload && hyprctl configerrors
+```
+
+The binding works only while the widget is on your bar, because the bar widget
+is what listens for the IPC command.
+
 ### Pages
 
 Notifications are shown newest first, in pages of five. When there is more than
