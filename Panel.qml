@@ -42,6 +42,15 @@ Panel {
     readonly property string linkMode: hostWidget ? hostWidget.subjectLinkMode : "api"
     readonly property var focusedItem: root.rowCount > 0 ? root.items[Math.min(root.focusIndex, root.rowCount - 1)] : null
 
+    // ---- pagination ---------------------------------------------------------
+    // The page on screen, watched below to reset the row cursor and the scroll
+    // when a new page arrives. The frame is the bounded token sequence from the
+    // spec; the control it drives is hidden until there is more than one page,
+    // and inert while the widget has a fetch in flight.
+    readonly property int currentPage: root.view && root.view.page ? root.view.page : 1
+    readonly property var paginationFrame: Model.paginationFrame(root.view.totalPages, root.view.page, Model.PAGINATION_WINDOW)
+    readonly property bool paginationReady: !(root.hostWidget && root.hostWidget.busy)
+
     function open() {
         root.controller.show();
     }
@@ -51,6 +60,29 @@ Panel {
     function refreshNow() {
         if (hostWidget && typeof hostWidget.refreshNow === "function")
             hostWidget.refreshNow();
+    }
+
+    // Pagination forwards to the widget, which owns the fetch. It is refused
+    // while the widget is busy so a click cannot start a second request; the
+    // widget also queues mid-fetch requests as `pendingPage`, so this is
+    // belt-and-braces.
+    function goToPage(k) {
+        if (!root.paginationReady)
+            return;
+        if (hostWidget && typeof hostWidget.goToPage === "function")
+            hostWidget.goToPage(k);
+    }
+    function previousPage() {
+        if (!root.paginationReady)
+            return;
+        if (hostWidget && typeof hostWidget.previousPage === "function")
+            hostWidget.previousPage();
+    }
+    function nextPage() {
+        if (!root.paginationReady)
+            return;
+        if (hostWidget && typeof hostWidget.nextPage === "function")
+            hostWidget.nextPage();
     }
 
     // Both links go through the Omarchy browser launcher rather than xdg-open, so
@@ -115,6 +147,14 @@ Panel {
         });
     }
 
+    // A new page is a new list: drop the cursor highlight and scroll back to the
+    // top so neither points at a row that is no longer there.
+    onCurrentPageChanged: {
+        root.cursorActive = false;
+        root.focusIndex = 0;
+        flick.contentY = 0;
+    }
+
     KeyboardPanel {
         id: popup
         anchorItem: root.anchorItem
@@ -145,6 +185,10 @@ Panel {
                     root.openFocusedRepo();
                 else if (t === "r" || t === "R")
                     root.refreshNow();
+                else if (t === "[")
+                    root.previousPage();
+                else if (t === "]")
+                    root.nextPage();
             }
 
             Flickable {
@@ -245,6 +289,86 @@ Panel {
                         wrapMode: Text.WordWrap
                         topPadding: Style.space(10)
                         bottomPadding: Style.space(10)
+                    }
+
+                    // ---- pagination ---------------------------------------------
+                    // Shown only when the inbox spans more than one page. The
+                    // chevrons are always part of the control and are greyed and
+                    // inert at either end; page tokens reuse the same
+                    // CursorSurface chrome as the notification rows, and the
+                    // active page is marked `current` (accent + selected fill).
+                    Item {
+                        id: paginationRow
+                        visible: Model.paginationVisible(root.view.totalPages)
+                        width: parent.width
+                        height: pagination.implicitHeight
+
+                        Row {
+                            id: pagination
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            spacing: Style.space(4)
+
+                            PanelActionButton {
+                                id: previousButton
+                                iconText: "\uf104"
+                                tooltipText: "Previous page"
+                                foreground: root.foreground
+                                enabled: root.paginationReady && Model.canPreviousPage(root.view.page)
+                                onClicked: root.previousPage()
+                            }
+
+                            Repeater {
+                                id: pageTokens
+                                model: root.paginationFrame
+
+                                delegate: CursorSurface {
+                                    id: token
+                                    required property var modelData
+                                    required property int index
+
+                                    readonly property bool isEllipsis: modelData === "..."
+                                    readonly property bool isCurrent: modelData === root.view.page
+
+                                    width: tokenLabel.implicitWidth + Style.space(14)
+                                    height: previousButton.height
+
+                                    foreground: root.foreground
+                                    accent: root.accent
+                                    // The active page keeps its selected fill;
+                                    // hovering only paints the other tokens.
+                                    hasCursor: tokenMouse.containsMouse && !token.isCurrent && !token.isEllipsis
+                                    current: token.isCurrent
+
+                                    Text {
+                                        id: tokenLabel
+                                        anchors.centerIn: parent
+                                        textFormat: Text.PlainText
+                                        text: token.isEllipsis ? "..." : String(token.modelData)
+                                        color: token.isCurrent ? root.accent : (token.isEllipsis ? root.dim : root.foreground)
+                                        font.family: root.fontFamily
+                                        font.pixelSize: Style.font.body
+                                    }
+
+                                    MouseArea {
+                                        id: tokenMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: !token.isEllipsis
+                                        enabled: !token.isEllipsis && root.paginationReady
+                                        cursorShape: tokenMouse.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                        onClicked: root.goToPage(token.modelData)
+                                    }
+                                }
+                            }
+
+                            PanelActionButton {
+                                id: nextButton
+                                iconText: "\uf105"
+                                tooltipText: "Next page"
+                                foreground: root.foreground
+                                enabled: root.paginationReady && Model.canNextPage(root.view.page, root.view.totalPages)
+                                onClicked: root.nextPage()
+                            }
+                        }
                     }
 
                     PanelSeparator {

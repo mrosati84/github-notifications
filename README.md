@@ -120,6 +120,7 @@ repository link is unaffected: `repository.html_url` is already a web page.
 | `Enter` / `Space`   | open the subject of the cursor row           |
 | `o`                 | open the repository of the cursor row        |
 | `r`                 | check right now                              |
+| `[` / `]`           | previous / next page                         |
 | `Esc`               | close                                        |
 | `Tab` / `Shift+Tab` | next / previous panel in the bar             |
 
@@ -129,6 +130,23 @@ targets inside it.
 
 Clicking a link leaves the panel open on purpose, so both links of a row can be
 used in one visit.
+
+## Pagination
+
+Notifications are shown in pages of **5**, newest first. When the inbox spans
+more than one page, a pagination control appears at the bottom of the panel: a
+previous and a next chevron around a bounded run of page-number tokens. A `...`
+token stands in for a run of skipped pages, and the current page is marked in
+the accent colour.
+
+- click a page number to jump straight to it;
+- the chevrons move one page and are greyed out on the first and last page;
+- `[` and `]` are the keyboard equivalents of previous and next;
+- only the page on screen is fetched — the widget never walks the whole inbox.
+
+The five-minute check keeps you on the page you are reading. Opening the panel
+(or pressing `r`, or middle-clicking the icon) is a full check and starts again
+from page 1.
 
 ## IPC
 
@@ -148,9 +166,12 @@ omarchy-shell io.github.mrosati84.github-notifications refresh
 - **A failed check keeps the last list.** The panel shows the error, labels the
   list as stale ("Showing the last list that loaded", "Last good check 21:45")
   and leaves the icon's lit state alone until a check succeeds.
-- **The default command is `gh api notifications --paginate --slurp`.** Inboxes
-  bigger than one page (GitHub's default page is 30) are counted whole; the
-  slurped pages are flattened in `Model.js`.
+- **The fetch is bounded to one page at a time.** Each check reads one page of
+  5 (`per_page=5`) plus a one-item `--include` probe whose `Link` header
+  carries the exact unread total, so an inbox of any size costs the same two
+  reads and downloads at most one page of JSON. Both streams are capped at the
+  shell (`head -c`: 8 KiB of stderr, 256 KiB of stdout), so a runaway response
+  can never be buffered whole. There is no `--paginate`/`--slurp`.
 - **The bar exists per monitor**, so on a two-screen desktop the check runs once
   per instance. Two requests every five minutes is well inside the API rate
   limit, and each instance keeps its own panel state.
@@ -164,11 +185,11 @@ omarchy-shell io.github.mrosati84.github-notifications refresh
 | ------------------- | ----------------------------------------------------------------------- |
 | `manifest.json`     | plugin manifest (`bar-widget`, entry point, settings schema)            |
 | `BarWidget.qml`     | polling (Timer + Process), bar icon, click handling, IPC target         |
-| `Panel.qml`         | the popup: header, notification rows with two links each, footer        |
+| `Panel.qml`         | the popup: header, notification rows with two links each, pagination, footer |
 | `GitHubMark.qml`    | the SVG mark, tinted to the theme, lit or dimmed                        |
 | `assets/github.svg` | the GitHub mark itself (white; tinted at render time)                   |
 | `Model.js`          | pure logic: parsing, link rewriting, failure text, display strings      |
-| `test-model.js`     | node self-check for `Model.js` (32 tests, includes one live round-trip) |
+| `test-model.js`     | node self-check for `Model.js` (49 tests, includes one live round-trip) |
 
 ## Testing
 

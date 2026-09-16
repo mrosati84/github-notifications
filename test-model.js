@@ -1,10 +1,11 @@
 // Node self-check for Model.js (GitHub Notifications).
 //
-// Deterministic unit tests for the four-field normalisation, the pagination
-// flattening, gh failure classification, the link rewriting, the state
-// reducer and every display string - plus one live round-trip through the real
-// `gh api notifications` command when gh is available and authenticated (it is
-// skipped, not failed, when it is not).
+// Deterministic unit tests for the bounded fetch command, the count probe and
+// page parsing, the pagination algorithm (including the conformance tables in
+// pagination-specs.md section 11 and the invariant sweep in section 10), the
+// link rewriting, the state reducer and every display string - plus one live
+// round-trip through the real `gh api notifications` command when gh is
+// available and authenticated (it is skipped, not failed, when it is not).
 //
 // Run: node test-model.js
 
@@ -90,46 +91,211 @@ function item(title, extra) {
   );
 }
 
-// --------------------------------------------------------------------------
-// interval clamping
+// n valid raw gh items, spread over three repositories.
+function manyItems(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push({
+      id: String(i),
+      unread: true,
+      subject: {
+        title: "subject " + i,
+        url: "https://api.github.com/repos/acme/widgets/issues/" + i,
+        type: "Issue",
+      },
+      repository: {
+        name: "repo-" + (i % 3),
+        html_url: "https://github.com/acme/repo-" + (i % 3),
+      },
+    });
+  }
+  return out;
+}
 
-test("clampIntervalSeconds keeps a sane value and defaults the rest", () => {
-  assert.strictEqual(M.clampIntervalSeconds(300), 300);
-  assert.strictEqual(M.clampIntervalSeconds("600"), 600);
-  assert.strictEqual(M.clampIntervalSeconds(undefined), 300);
-  assert.strictEqual(M.clampIntervalSeconds(0), 300);
-  assert.strictEqual(M.clampIntervalSeconds(-5), 300);
-  assert.strictEqual(M.clampIntervalSeconds(1), 60); // floored
-  assert.strictEqual(M.clampIntervalSeconds(99999), 3600); // capped
-  assert.strictEqual(M.clampIntervalSeconds("abc"), 300);
+// ---- fake `gh api ... --include` probe responses ---------------------------
+// The count probe is one item at most: `rel="last"` carries the total when the
+// inbox overflows one page, otherwise the body array itself is 0 or 1 long.
+function probeWithCount(count) {
+  const one = JSON.stringify([PAGE_TWO[0]]);
+  if (count >= 2) {
+    return (
+      "HTTP/2.0 200 OK\r\n" +
+      "Content-Type: application/json; charset=utf-8\r\n" +
+      'Link: <https://api.github.com/notifications?per_page=1&page=' +
+      count +
+      '>; rel="last"\r\n' +
+      "\r\n" +
+      one
+    );
+  }
+  return (
+    "HTTP/2.0 200 OK\r\n" +
+    "Content-Type: application/json; charset=utf-8\r\n" +
+    "\r\n" +
+    (count === 1 ? one : "[]")
+  );
+}
+
+// Exactly what ghCommand(1) prints: probe, sentinel, one page of JSON.
+function combinedStdout(count, pageItems) {
+  return probeWithCount(count) + M.COUNT_MARKER + JSON.stringify(pageItems || []);
+}
+
+function parseCombined(count, pageItems, requestedPage) {
+  return M.parseNotifications(
+    0,
+    combinedStdout(count, pageItems),
+    "",
+    requestedPage === undefined ? 1 : requestedPage,
+  );
+}
+
+function viewFor(count, pageItems, requestedPage, nowMs) {
+  const view = M.viewAfterFetch(
+    M.initialView(),
+    parseCombined(count, pageItems, requestedPage),
+    nowMs === undefined ? 1 : nowMs,
+  );
+  return view;
+}
+
+// A conformance-table frame string -> the algorithm's token array.
+function frame(str) {
+  return str.split(" ").map((t) => (t === "..." ? "..." : Number(t)));
+}
+
+// --------------------------------------------------------------------------
+// constants and the bounded command
+
+test("the bounded fetch constants are fixed", () => {
+  assert.strictEqual(M.PAGE_SIZE, 5);
+  assert.strictEqual(M.PAGINATION_WINDOW, 5);
+  assert.strictEqual(M.MAX_STDOUT_BYTES, 262144);
+  assert.strictEqual(M.MAX_STDERR_BYTES, 8192);
+  assert.strictEqual(M.MAX_NAME_CHARS, 200);
+  assert.strictEqual(M.MAX_TITLE_CHARS, 300);
+  assert.strictEqual(M.MAX_URL_CHARS, 512);
+  assert.strictEqual(M.COUNT_MARKER_TEXT, "@@GH_NOTIF_COUNT@@");
+  assert.strictEqual(M.COUNT_MARKER, "\n@@GH_NOTIF_COUNT@@\n");
+  assert.strictEqual(M.countMarker(), M.COUNT_MARKER);
+});
+
+test("the command is bounded: one probe plus one page, no paginate/slurp", () => {
+  const cmd = M.ghCommand(3);
+  assert.ok(cmd.indexOf("notifications?per_page=5&page=3") !== -1, cmd);
+  assert.ok(cmd.indexOf("notifications?per_page=1&page=1") !== -1, cmd);
+  assert.strictEqual((cmd.match(/head -c/g) || []).length, 2);
+  assert.ok(cmd.indexOf("head -c 8192") !== -1, cmd);
+  assert.ok(cmd.indexOf("head -c 262145") !== -1, cmd);
+  assert.ok(!/--paginate|--slurp/.test(cmd), cmd);
+  assert.deepStrictEqual(M.ghArgv(1).slice(0, 2), ["bash", "-lc"]);
+});
+
+test("a bad page request in the command falls back to page 1", () => {
+  assert.ok(M.ghCommand(0).indexOf("notifications?per_page=5&page=1") !== -1);
+  assert.ok(M.ghCommand(-4).indexOf("notifications?per_page=5&page=1") !== -1);
+  assert.ok(M.ghCommand("nope").indexOf("notifications?per_page=5&page=1") !== -1);
+  assert.ok(M.ghCommand(2.9).indexOf("notifications?per_page=5&page=2") !== -1);
 });
 
 // --------------------------------------------------------------------------
-// parsing
+// probe / count / page parsing
 
-test("the default command is the plain gh one plus pagination", () => {
-  assert.deepStrictEqual(M.ghArgv(), [
-    "bash",
-    "-lc",
-    "exec gh api notifications --paginate --slurp",
-  ]);
+test("splitHeadersBody and parseLinkPages read gh's --include shape", () => {
+  const split = M.splitHeadersBody("A: 1\r\nB: 2\r\n\r\nBODY");
+  assert.strictEqual(split.headers, "A: 1\r\nB: 2");
+  assert.strictEqual(split.body, "BODY");
+  assert.deepStrictEqual(M.splitHeadersBody("no blank line"), {
+    headers: "",
+    body: "no blank line",
+  });
+  const links = M.parseLinkPages(
+    'Link: <https://api.github.com/notifications?per_page=1&page=2>; rel="next", ' +
+      '<https://api.github.com/notifications?per_page=1&page=97>; rel="last"',
+  );
+  assert.strictEqual(links.next, 2);
+  assert.strictEqual(links.last, 97);
+  assert.strictEqual(links.prev, null);
+  assert.strictEqual(links.first, null);
 });
 
-test("a slurped, paginated response flattens into one list", () => {
-  const out = JSON.stringify([PAGE_ONE, PAGE_TWO]);
-  const result = M.parseNotifications(0, out, "");
+test("countFromProbe reads Link last, then the body array", () => {
+  assert.strictEqual(M.countFromProbe(probeWithCount(97)), 97);
+  assert.strictEqual(M.countFromProbe(probeWithCount(1)), 1);
+  assert.strictEqual(M.countFromProbe(probeWithCount(0)), 0);
+  assert.strictEqual(M.countFromProbe("garbage"), null);
+  assert.strictEqual(
+    M.countFromProbe('HTTP/2.0 200 OK\n\n{"message":"Not Found"}'),
+    null,
+  );
+});
+
+test("derived page maths", () => {
+  assert.strictEqual(M.totalPagesFromCount(0, 5), 1);
+  assert.strictEqual(M.totalPagesFromCount(10, 5), 2);
+  assert.strictEqual(M.totalPagesFromCount(11, 5), 3);
+  assert.strictEqual(M.totalPagesFromCount(97, 5), 20);
+  assert.strictEqual(M.clampPage(0, 3), 1);
+  assert.strictEqual(M.clampPage(2, 3), 2);
+  assert.strictEqual(M.clampPage(999, 3), 3);
+  assert.strictEqual(M.clampPage(5, 0), 1);
+});
+
+test("a combined probe+page response parses into a bounded page", () => {
+  const result = parseCombined(97, PAGE_ONE, 1);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.error, "");
-  assert.strictEqual(result.items.length, 3);
+  assert.strictEqual(result.totalCount, 97);
+  assert.strictEqual(result.totalPages, 20);
+  assert.strictEqual(result.page, 1);
+  assert.ok(result.items.length <= M.PAGE_SIZE);
 });
 
-test("an un-slurped single page parses the same way", () => {
-  const result = M.parseNotifications(0, JSON.stringify(PAGE_ONE), "");
-  assert.strictEqual(result.items.length, 2);
+test("the count probe covers 0, 1 and overflow", () => {
+  const zero = parseCombined(0, []);
+  assert.strictEqual(zero.ok, true);
+  assert.strictEqual(zero.totalCount, 0);
+  assert.strictEqual(zero.totalPages, 1);
+
+  const one = parseCombined(1, PAGE_TWO);
+  assert.strictEqual(one.totalCount, 1);
+  assert.strictEqual(one.totalPages, 1);
+
+  const many = parseCombined(25, PAGE_ONE, 2);
+  assert.strictEqual(many.totalCount, 25);
+  assert.strictEqual(many.totalPages, 5);
+  assert.strictEqual(many.page, 2);
+  assert.strictEqual(many.items.length, 2);
+});
+
+test("a requested page past the end clamps to the last page", () => {
+  const result = parseCombined(25, PAGE_ONE, 999);
+  assert.strictEqual(result.totalPages, 5);
+  assert.strictEqual(result.page, 5);
+});
+
+test("more than a page of items is capped at PAGE_SIZE", () => {
+  const result = parseCombined(200, manyItems(20), 1);
+  assert.strictEqual(result.ok, true);
+  assert.strictEqual(result.items.length, M.PAGE_SIZE);
+});
+
+test("retained strings are truncated to their caps", () => {
+  const long = {
+    subject: { title: "t".repeat(900), url: "u".repeat(900) },
+    repository: { name: "n".repeat(900), html_url: "h".repeat(900) },
+  };
+  const result = parseCombined(200, [long], 1);
+  assert.strictEqual(result.items.length, 1);
+  const first = result.items[0];
+  assert.strictEqual(first.repoName.length, M.MAX_NAME_CHARS);
+  assert.strictEqual(first.title.length, M.MAX_TITLE_CHARS);
+  assert.strictEqual(first.repoUrl.length, M.MAX_URL_CHARS);
+  assert.strictEqual(first.subjectUrl.length, M.MAX_URL_CHARS);
 });
 
 test("only the four wanted fields survive", () => {
-  const result = M.parseNotifications(0, JSON.stringify([PAGE_ONE]), "");
+  const result = parseCombined(20, [PAGE_ONE], 1);
   assert.deepStrictEqual(result.items[0], {
     repoName: "widgets",
     repoUrl: "https://github.com/acme/widgets",
@@ -145,13 +311,13 @@ test("only the four wanted fields survive", () => {
 });
 
 test("missing pieces become empty strings, never undefined", () => {
-  const result = M.parseNotifications(
-    0,
-    JSON.stringify([
+  const result = parseCombined(
+    20,
+    [
       { subject: { title: "no repository at all" } },
       { repository: { name: "only-repo" } },
-    ]),
-    "",
+    ],
+    1,
   );
   assert.strictEqual(result.items.length, 2);
   assert.strictEqual(result.items[0].repoName, "");
@@ -163,36 +329,74 @@ test("missing pieces become empty strings, never undefined", () => {
 });
 
 test("entries that carry nothing at all are dropped", () => {
-  const result = M.parseNotifications(
-    0,
-    JSON.stringify([PAGE_ONE[0], {}, null, "nope", []]),
-    "",
-  );
+  const result = parseCombined(20, [PAGE_ONE[0], {}, null, "nope", []], 1);
   assert.strictEqual(result.items.length, 1);
 });
 
 test("an empty notification list is a success", () => {
-  const result = M.parseNotifications(0, "[]", "");
+  const result = parseCombined(0, []);
   assert.strictEqual(result.ok, true);
   assert.strictEqual(result.items.length, 0);
+  assert.strictEqual(result.totalCount, 0);
 });
 
-test("empty output is treated as an empty list, not as an error", () => {
+test("empty output without the sentinel is reported", () => {
   const result = M.parseNotifications(0, "", "");
-  assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.items.length, 0);
+  assert.strictEqual(result.ok, false);
+  assert.match(result.error, /unexpected response/);
 });
 
-test("non-JSON output is reported instead of thrown", () => {
-  const result = M.parseNotifications(0, "gh: something went sideways", "");
+test("stdout without the sentinel is reported", () => {
+  const result = M.parseNotifications(0, JSON.stringify(PAGE_ONE), "");
+  assert.strictEqual(result.ok, false);
+  assert.match(result.error, /unexpected response/);
+});
+
+test("non-JSON page output is reported instead of thrown", () => {
+  const result = M.parseNotifications(
+    0,
+    probeWithCount(0) + M.COUNT_MARKER + "gh: something went sideways",
+    "",
+    1,
+  );
   assert.strictEqual(result.ok, false);
   assert.match(result.error, /not JSON/);
 });
 
 test("a single object instead of a list is reported", () => {
-  const result = M.parseNotifications(0, '{"message":"Not Found"}', "");
+  const result = M.parseNotifications(
+    0,
+    probeWithCount(0) + M.COUNT_MARKER + '{"message":"Not Found"}',
+    "",
+    1,
+  );
   assert.strictEqual(result.ok, false);
   assert.match(result.error, /single object/);
+});
+
+test("an oversized stdout is rejected before parsing", () => {
+  const result = M.parseNotifications(
+    0,
+    "x".repeat(M.MAX_STDOUT_BYTES + 1),
+    "",
+    1,
+  );
+  assert.strictEqual(result.ok, false);
+  assert.match(result.error, /more data/);
+  assert.strictEqual(M.utf8Length("x".repeat(M.MAX_STDOUT_BYTES)), M.MAX_STDOUT_BYTES);
+  assert.strictEqual(M.utf8Length("é"), 2);
+  assert.strictEqual(M.utf8Length("😀"), 4);
+});
+
+test("an unparseable probe is classified as a gh failure", () => {
+  const result = M.parseNotifications(
+    0,
+    "not a probe at all" + M.COUNT_MARKER + "[]",
+    "",
+    1,
+  );
+  assert.strictEqual(result.ok, false);
+  assert.match(result.error, /exit 0/);
 });
 
 // --------------------------------------------------------------------------
@@ -258,19 +462,25 @@ test("a fresh view is loading with nothing in it", () => {
   assert.deepStrictEqual(M.initialView(), {
     status: "loading",
     items: [],
+    totalCount: 0,
+    totalPages: 1,
+    page: 1,
     error: "",
     checkedAt: 0,
   });
 });
 
-test("a good fetch replaces the list", () => {
+test("a good fetch replaces the list and the page accounting", () => {
   const view = M.viewAfterFetch(
     M.initialView(),
-    M.parseNotifications(0, JSON.stringify(PAGE_TWO), ""),
+    M.parseNotifications(0, combinedStdout(20, PAGE_TWO), "", 1),
     1000,
   );
   assert.strictEqual(view.status, "ok");
   assert.strictEqual(view.items.length, 1);
+  assert.strictEqual(view.totalCount, 20);
+  assert.strictEqual(view.totalPages, 4);
+  assert.strictEqual(view.page, 1);
   assert.strictEqual(view.error, "");
   assert.strictEqual(view.checkedAt, 1000);
 });
@@ -278,7 +488,7 @@ test("a good fetch replaces the list", () => {
 test("a failed fetch keeps the last good list and records when it was checked", () => {
   const good = M.viewAfterFetch(
     M.initialView(),
-    M.parseNotifications(0, JSON.stringify(PAGE_ONE), ""),
+    M.parseNotifications(0, combinedStdout(20, PAGE_ONE), "", 1),
     1000,
   );
   const bad = M.viewAfterFetch(
@@ -289,6 +499,9 @@ test("a failed fetch keeps the last good list and records when it was checked", 
   assert.strictEqual(bad.status, "error");
   assert.strictEqual(bad.items.length, 2); // nothing thrown away
   assert.strictEqual(bad.items[0].title, good.items[0].title);
+  assert.strictEqual(bad.totalCount, 20);
+  assert.strictEqual(bad.totalPages, 4);
+  assert.strictEqual(bad.page, 1);
   assert.strictEqual(bad.checkedAt, 2000);
   assert.match(bad.error, /rate limit/);
 });
@@ -302,6 +515,9 @@ test("a failure with no prior list is just a failure", () => {
   assert.deepStrictEqual(view, {
     status: "error",
     items: [],
+    totalCount: 0,
+    totalPages: 1,
+    page: 1,
     error: "boom",
     checkedAt: 5,
   });
@@ -374,123 +590,76 @@ test("subjectLink honours the mode and falls back to gh's own URL", () => {
 });
 
 test("the repository link is repository.html_url, unchanged", () => {
-  assert.strictEqual(
-    M.repoLink(item("x")),
-    "https://github.com/cli/cli",
-  );
+  assert.strictEqual(M.repoLink(item("x")), "https://github.com/cli/cli");
   assert.strictEqual(M.repoLink(null), "");
 });
 
 // --------------------------------------------------------------------------
 // display strings
 
-test("counts and the lit/unlit decision", () => {
-  const empty = M.viewAfterFetch(
-    M.initialView(),
-    M.parseNotifications(0, "[]", ""),
-    1,
-  );
-  const full = M.viewAfterFetch(
-    M.initialView(),
-    M.parseNotifications(0, JSON.stringify([PAGE_ONE, PAGE_TWO]), ""),
-    1,
-  );
+test("counts come from the probe, not from the visible page", () => {
+  const empty = viewFor(0, []);
+  const multi = viewFor(200, manyItems(10), 3);
   assert.strictEqual(M.countOf(empty), 0);
   assert.strictEqual(M.hasNotifications(empty), false);
-  assert.strictEqual(M.countOf(full), 3);
-  assert.strictEqual(M.hasNotifications(full), true);
+  assert.strictEqual(M.countOf(multi), 200);
+  assert.strictEqual(M.pageItemCount(multi), M.PAGE_SIZE);
+  assert.strictEqual(M.hasNotifications(multi), true);
   assert.strictEqual(M.hasNotifications(M.initialView()), false);
+  assert.strictEqual(M.countOf({ items: [{}, {}] }), 2); // fallback
 });
 
 test("the pill reads the state in one glance", () => {
   assert.strictEqual(M.statusPill(M.initialView()), "CHECKING");
+  assert.strictEqual(M.statusPill(viewFor(0, [])), "ALL READ");
+  assert.strictEqual(M.statusPill(viewFor(2, PAGE_ONE)), "2 UNREAD");
+  assert.strictEqual(M.statusPill(viewFor(200, manyItems(10), 1)), "200 UNREAD");
   assert.strictEqual(
-    M.statusPill(
-      M.viewAfterFetch(M.initialView(), M.parseNotifications(0, "[]", ""), 1),
-    ),
-    "ALL READ",
-  );
-  assert.strictEqual(
-    M.statusPill(
-      M.viewAfterFetch(
-        M.initialView(),
-        M.parseNotifications(0, JSON.stringify([PAGE_ONE]), ""),
-        1,
-      ),
-    ),
-    "2 UNREAD",
-  );
-  assert.strictEqual(
-    M.statusPill(
-      M.viewAfterFetch(
-        M.initialView(),
-        { ok: false, items: [], error: "x" },
-        1,
-      ),
-    ),
+    M.statusPill(M.viewAfterFetch(M.initialView(), { ok: false, items: [], error: "x" }, 1)),
     "GH ERROR",
   );
 });
 
-test("singular and plural are both correct", () => {
-  const one = M.viewAfterFetch(
-    M.initialView(),
-    M.parseNotifications(0, JSON.stringify([PAGE_TWO]), ""),
-    1,
-  );
+test("singular and plural are both correct, and pages are named", () => {
+  const one = viewFor(1, PAGE_TWO);
   assert.strictEqual(M.statusPill(one), "1 UNREAD");
-  // The hero carries only the repository count: the pill has the count of
-  // notifications and every row names its own repository.
   assert.strictEqual(M.heroMeta(one), "in 1 repository");
-  const many = M.viewAfterFetch(
-    M.initialView(),
-    M.parseNotifications(0, JSON.stringify([PAGE_ONE, PAGE_TWO]), ""),
-    1,
-  );
-  assert.strictEqual(M.heroMeta(many), "in 3 repositories");
-  // The log line still spells the whole state out.
+  assert.strictEqual(M.statusLine(one), "1 unread notification in 1 repository");
+
+  const three = viewFor(3, [PAGE_ONE, PAGE_TWO]);
+  assert.strictEqual(M.heroMeta(three), "in 3 repositories");
   assert.strictEqual(
-    M.statusLine(one),
-    "1 unread notification in 1 repository",
-  );
-  assert.strictEqual(
-    M.statusLine(many),
+    M.statusLine(three),
     "3 unread notifications in 3 repositories",
   );
+
+  const multi = viewFor(200, manyItems(10), 10);
+  assert.strictEqual(M.heroMeta(multi), "page 10 of 40");
+  assert.strictEqual(M.statusLine(multi), "200 unread notifications (page 10 of 40)");
+
   assert.strictEqual(
     M.statusLine(M.initialView()),
     "Checking gh api notifications",
   );
+  assert.strictEqual(M.statusLine(viewFor(0, [])), "No unread notifications");
   assert.strictEqual(
-    M.statusLine(
-      M.viewAfterFetch(M.initialView(), M.parseNotifications(0, "[]", ""), 1),
-    ),
-    "No unread notifications",
+    M.heroMeta(M.viewAfterFetch(M.initialView(), { ok: false, items: [], error: "x" }, 1)),
+    "gh api notifications failed",
   );
 });
 
 test("the empty, loading and error copies", () => {
   assert.match(M.emptyText(M.initialView()), /Asking gh/);
-  assert.match(
-    M.emptyText(
-      M.viewAfterFetch(M.initialView(), M.parseNotifications(0, "[]", ""), 1),
-    ),
-    /Nothing unread/,
-  );
+  assert.match(M.emptyText(viewFor(0, [])), /Nothing unread/);
+  assert.strictEqual(M.heroMeta(viewFor(0, [])), "Inbox zero");
   assert.strictEqual(
-    M.heroMeta(
-      M.viewAfterFetch(M.initialView(), M.parseNotifications(0, "[]", ""), 1),
-    ),
-    "Inbox zero",
+    M.heroMeta(M.initialView()),
+    "Checking gh api notifications",
   );
 });
 
 test("an error keeps the stale list labelled as stale", () => {
-  const good = M.viewAfterFetch(
-    M.initialView(),
-    M.parseNotifications(0, JSON.stringify(PAGE_ONE), ""),
-    1000,
-  );
+  const good = viewFor(2, PAGE_ONE, 1, 1000);
   const stale = M.viewAfterFetch(
     good,
     { ok: false, items: [], error: "rate limit" },
@@ -499,6 +668,7 @@ test("an error keeps the stale list labelled as stale", () => {
   assert.strictEqual(M.errorHint(stale), "Showing the last list that loaded.");
   assert.strictEqual(M.errorHint(good), "");
   assert.match(M.footerText(stale), /^Last good check /);
+  assert.strictEqual(M.errorHint(stale) !== "", true);
   assert.strictEqual(
     M.errorHint(
       M.viewAfterFetch(undefined, { ok: false, items: [], error: "x" }, 1),
@@ -511,17 +681,11 @@ test("the repository breakdown counts and caps", () => {
   const items = [
     item("a"),
     item("b"),
-    item("c", {
-      repoName: "other",
-      repoUrl: "https://github.com/x/other",
-    }),
+    item("c", { repoName: "other", repoUrl: "https://github.com/x/other" }),
     item("d", { repoName: "third", repoUrl: "https://github.com/x/third" }),
   ];
   assert.strictEqual(M.repositoryCount(items), 3);
-  assert.strictEqual(
-    M.repoBreakdown(items, 2),
-    "cli x2 · other x1 · +1 more",
-  );
+  assert.strictEqual(M.repoBreakdown(items, 2), "cli x2 · other x1 · +1 more");
   assert.strictEqual(
     M.repoBreakdown(items, 3),
     "cli x2 · other x1 · third x1",
@@ -542,29 +706,13 @@ test("times render as local HH:MM and never as NaN", () => {
   assert.strictEqual(M.formatTime(0), "");
   assert.strictEqual(M.formatTime(undefined), "");
   assert.strictEqual(M.footerText(M.initialView()), "");
-  assert.match(
-    M.footerText(
-      M.viewAfterFetch(
-        M.initialView(),
-        M.parseNotifications(0, "[]", ""),
-        midday,
-      ),
-    ),
-    /^Checked 09:05$/,
-  );
+  assert.match(M.footerText(viewFor(0, [], 1, midday)), /^Checked 09:05$/);
 });
 
 test("the tooltip always explains the three clicks", () => {
-  const full = M.viewAfterFetch(
-    M.initialView(),
-    M.parseNotifications(0, JSON.stringify([PAGE_ONE]), ""),
-    1,
-  );
-  const empty = M.viewAfterFetch(
-    M.initialView(),
-    M.parseNotifications(0, "[]", ""),
-    1,
-  );
+  const full = viewFor(2, PAGE_ONE);
+  const multi = viewFor(200, manyItems(10), 10);
+  const empty = viewFor(0, []);
   const broken = M.viewAfterFetch(
     M.initialView(),
     { ok: false, items: [], error: "gh is not authenticated." },
@@ -575,6 +723,8 @@ test("the tooltip always explains the three clicks", () => {
     /^2 unread GitHub notifications\nwidgets x1 · cli x1\n/,
   );
   assert.match(M.tooltip(full), /middle-click to refresh/);
+  assert.match(M.tooltip(multi), /\npage 10 of 40\n/);
+  assert.strictEqual(M.tooltip(multi).indexOf("repo-0 x"), -1);
   assert.strictEqual(
     M.tooltip(empty).split("\n")[0],
     "No unread GitHub notifications",
@@ -587,9 +737,383 @@ test("the tooltip always explains the three clicks", () => {
 });
 
 // --------------------------------------------------------------------------
+// pagination conformance tables (pagination-specs.md section 11)
+
+// Table A - total pages T = 1..12, every current page p. Ranges expanded.
+const TABLE_A = [
+  [1, [[1, 1, "1"]]],
+  [2, [[1, 2, "1 2"]]],
+  [3, [[1, 3, "1 2 3"]]],
+  [4, [[1, 4, "1 2 3 4"]]],
+  [5, [[1, 5, "1 2 3 4 5"]]],
+  [6, [[1, 6, "1 2 3 4 5 6"]]],
+  [7, [[1, 7, "1 2 3 4 5 6 7"]]],
+  [8, [[1, 4, "1 2 3 4 5 ... 8"], [5, 8, "1 ... 4 5 6 7 8"]]],
+  [9, [[1, 5, "1 2 3 4 5 6 ... 9"], [6, 9, "1 ... 4 5 6 7 8 9"]]],
+  [10, [[1, 5, "1 2 3 4 5 6 ... 10"], [6, 10, "1 ... 5 6 7 8 9 10"]]],
+  [
+    11,
+    [
+      [1, 5, "1 2 3 4 5 6 ... 11"],
+      [6, 6, "1 ... 4 5 6 7 8 ... 11"],
+      [7, 11, "1 ... 6 7 8 9 10 11"],
+    ],
+  ],
+  [
+    12,
+    [
+      [1, 5, "1 2 3 4 5 6 ... 12"],
+      [6, 6, "1 ... 4 5 6 7 8 ... 12"],
+      [7, 7, "1 ... 5 6 7 8 9 ... 12"],
+      [8, 12, "1 ... 7 8 9 10 11 12"],
+    ],
+  ],
+];
+
+// Table B - total pages T = 20, every current page p.
+const TABLE_B = [
+  [1, "1 2 3 4 5 6 ... 20"],
+  [2, "1 2 3 4 5 6 ... 20"],
+  [3, "1 2 3 4 5 6 ... 20"],
+  [4, "1 2 3 4 5 6 ... 20"],
+  [5, "1 2 3 4 5 6 ... 20"],
+  [6, "1 ... 4 5 6 7 8 ... 20"],
+  [7, "1 ... 5 6 7 8 9 ... 20"],
+  [8, "1 ... 6 7 8 9 10 ... 20"],
+  [9, "1 ... 7 8 9 10 11 ... 20"],
+  [10, "1 ... 8 9 10 11 12 ... 20"],
+  [11, "1 ... 9 10 11 12 13 ... 20"],
+  [12, "1 ... 10 11 12 13 14 ... 20"],
+  [13, "1 ... 11 12 13 14 15 ... 20"],
+  [14, "1 ... 12 13 14 15 16 ... 20"],
+  [15, "1 ... 13 14 15 16 17 ... 20"],
+  [16, "1 ... 15 16 17 18 19 20"],
+  [17, "1 ... 15 16 17 18 19 20"],
+  [18, "1 ... 15 16 17 18 19 20"],
+  [19, "1 ... 15 16 17 18 19 20"],
+  [20, "1 ... 15 16 17 18 19 20"],
+];
+
+// Table C - large totals: representative frames.
+const TABLE_C = [
+  [100, 1, "1 2 3 4 5 6 ... 100"],
+  [100, 2, "1 2 3 4 5 6 ... 100"],
+  [100, 3, "1 2 3 4 5 6 ... 100"],
+  [100, 4, "1 2 3 4 5 6 ... 100"],
+  [100, 5, "1 2 3 4 5 6 ... 100"],
+  [100, 6, "1 ... 4 5 6 7 8 ... 100"],
+  [100, 49, "1 ... 47 48 49 50 51 ... 100"],
+  [100, 50, "1 ... 48 49 50 51 52 ... 100"],
+  [100, 51, "1 ... 49 50 51 52 53 ... 100"],
+  [100, 95, "1 ... 93 94 95 96 97 ... 100"],
+  [100, 96, "1 ... 95 96 97 98 99 100"],
+  [100, 97, "1 ... 95 96 97 98 99 100"],
+  [100, 98, "1 ... 95 96 97 98 99 100"],
+  [100, 99, "1 ... 95 96 97 98 99 100"],
+  [100, 100, "1 ... 95 96 97 98 99 100"],
+  [1000, 1, "1 2 3 4 5 6 ... 1000"],
+  [1000, 2, "1 2 3 4 5 6 ... 1000"],
+  [1000, 3, "1 2 3 4 5 6 ... 1000"],
+  [1000, 4, "1 2 3 4 5 6 ... 1000"],
+  [1000, 5, "1 2 3 4 5 6 ... 1000"],
+  [1000, 6, "1 ... 4 5 6 7 8 ... 1000"],
+  [1000, 499, "1 ... 497 498 499 500 501 ... 1000"],
+  [1000, 500, "1 ... 498 499 500 501 502 ... 1000"],
+  [1000, 501, "1 ... 499 500 501 502 503 ... 1000"],
+  [1000, 995, "1 ... 993 994 995 996 997 ... 1000"],
+  [1000, 996, "1 ... 995 996 997 998 999 1000"],
+  [1000, 997, "1 ... 995 996 997 998 999 1000"],
+  [1000, 998, "1 ... 995 996 997 998 999 1000"],
+  [1000, 999, "1 ... 995 996 997 998 999 1000"],
+  [1000, 1000, "1 ... 995 996 997 998 999 1000"],
+  [12345, 1, "1 2 3 4 5 6 ... 12345"],
+  [12345, 2, "1 2 3 4 5 6 ... 12345"],
+  [12345, 3, "1 2 3 4 5 6 ... 12345"],
+  [12345, 4, "1 2 3 4 5 6 ... 12345"],
+  [12345, 5, "1 2 3 4 5 6 ... 12345"],
+  [12345, 6, "1 ... 4 5 6 7 8 ... 12345"],
+  [12345, 6171, "1 ... 6169 6170 6171 6172 6173 ... 12345"],
+  [12345, 6172, "1 ... 6170 6171 6172 6173 6174 ... 12345"],
+  [12345, 6173, "1 ... 6171 6172 6173 6174 6175 ... 12345"],
+  [12345, 12340, "1 ... 12338 12339 12340 12341 12342 ... 12345"],
+  [12345, 12341, "1 ... 12340 12341 12342 12343 12344 12345"],
+  [12345, 12342, "1 ... 12340 12341 12342 12343 12344 12345"],
+  [12345, 12343, "1 ... 12340 12341 12342 12343 12344 12345"],
+  [12345, 12344, "1 ... 12340 12341 12342 12343 12344 12345"],
+  [12345, 12345, "1 ... 12340 12341 12342 12343 12344 12345"],
+];
+
+// Table C-2 - the complete distinct frames and ranges for T = 100.
+const TABLE_C2 = [
+  [1, 5, "1 2 3 4 5 6 ... 100"],
+  [6, 6, "1 ... 4 5 6 7 8 ... 100"],
+  [7, 7, "1 ... 5 6 7 8 9 ... 100"],
+  [8, 8, "1 ... 6 7 8 9 10 ... 100"],
+  [9, 9, "1 ... 7 8 9 10 11 ... 100"],
+  [10, 10, "1 ... 8 9 10 11 12 ... 100"],
+  [11, 11, "1 ... 9 10 11 12 13 ... 100"],
+  [12, 12, "1 ... 10 11 12 13 14 ... 100"],
+  [13, 13, "1 ... 11 12 13 14 15 ... 100"],
+  [14, 14, "1 ... 12 13 14 15 16 ... 100"],
+  [15, 15, "1 ... 13 14 15 16 17 ... 100"],
+  [16, 16, "1 ... 14 15 16 17 18 ... 100"],
+  [17, 17, "1 ... 15 16 17 18 19 ... 100"],
+  [18, 18, "1 ... 16 17 18 19 20 ... 100"],
+  [19, 19, "1 ... 17 18 19 20 21 ... 100"],
+  [20, 20, "1 ... 18 19 20 21 22 ... 100"],
+  [21, 21, "1 ... 19 20 21 22 23 ... 100"],
+  [22, 22, "1 ... 20 21 22 23 24 ... 100"],
+  [23, 23, "1 ... 21 22 23 24 25 ... 100"],
+  [24, 24, "1 ... 22 23 24 25 26 ... 100"],
+  [25, 25, "1 ... 23 24 25 26 27 ... 100"],
+  [26, 26, "1 ... 24 25 26 27 28 ... 100"],
+  [27, 27, "1 ... 25 26 27 28 29 ... 100"],
+  [28, 28, "1 ... 26 27 28 29 30 ... 100"],
+  [29, 29, "1 ... 27 28 29 30 31 ... 100"],
+  [30, 30, "1 ... 28 29 30 31 32 ... 100"],
+  [31, 31, "1 ... 29 30 31 32 33 ... 100"],
+  [32, 32, "1 ... 30 31 32 33 34 ... 100"],
+  [33, 33, "1 ... 31 32 33 34 35 ... 100"],
+  [34, 34, "1 ... 32 33 34 35 36 ... 100"],
+  [35, 35, "1 ... 33 34 35 36 37 ... 100"],
+  [36, 36, "1 ... 34 35 36 37 38 ... 100"],
+  [37, 37, "1 ... 35 36 37 38 39 ... 100"],
+  [38, 38, "1 ... 36 37 38 39 40 ... 100"],
+  [39, 39, "1 ... 37 38 39 40 41 ... 100"],
+  [40, 40, "1 ... 38 39 40 41 42 ... 100"],
+  [41, 41, "1 ... 39 40 41 42 43 ... 100"],
+  [42, 42, "1 ... 40 41 42 43 44 ... 100"],
+  [43, 43, "1 ... 41 42 43 44 45 ... 100"],
+  [44, 44, "1 ... 42 43 44 45 46 ... 100"],
+  [45, 45, "1 ... 43 44 45 46 47 ... 100"],
+  [46, 46, "1 ... 44 45 46 47 48 ... 100"],
+  [47, 47, "1 ... 45 46 47 48 49 ... 100"],
+  [48, 48, "1 ... 46 47 48 49 50 ... 100"],
+  [49, 49, "1 ... 47 48 49 50 51 ... 100"],
+  [50, 50, "1 ... 48 49 50 51 52 ... 100"],
+  [51, 51, "1 ... 49 50 51 52 53 ... 100"],
+  [52, 52, "1 ... 50 51 52 53 54 ... 100"],
+  [53, 53, "1 ... 51 52 53 54 55 ... 100"],
+  [54, 54, "1 ... 52 53 54 55 56 ... 100"],
+  [55, 55, "1 ... 53 54 55 56 57 ... 100"],
+  [56, 56, "1 ... 54 55 56 57 58 ... 100"],
+  [57, 57, "1 ... 55 56 57 58 59 ... 100"],
+  [58, 58, "1 ... 56 57 58 59 60 ... 100"],
+  [59, 59, "1 ... 57 58 59 60 61 ... 100"],
+  [60, 60, "1 ... 58 59 60 61 62 ... 100"],
+  [61, 61, "1 ... 59 60 61 62 63 ... 100"],
+  [62, 62, "1 ... 60 61 62 63 64 ... 100"],
+  [63, 63, "1 ... 61 62 63 64 65 ... 100"],
+  [64, 64, "1 ... 62 63 64 65 66 ... 100"],
+  [65, 65, "1 ... 63 64 65 66 67 ... 100"],
+  [66, 66, "1 ... 64 65 66 67 68 ... 100"],
+  [67, 67, "1 ... 65 66 67 68 69 ... 100"],
+  [68, 68, "1 ... 66 67 68 69 70 ... 100"],
+  [69, 69, "1 ... 67 68 69 70 71 ... 100"],
+  [70, 70, "1 ... 68 69 70 71 72 ... 100"],
+  [71, 71, "1 ... 69 70 71 72 73 ... 100"],
+  [72, 72, "1 ... 70 71 72 73 74 ... 100"],
+  [73, 73, "1 ... 71 72 73 74 75 ... 100"],
+  [74, 74, "1 ... 72 73 74 75 76 ... 100"],
+  [75, 75, "1 ... 73 74 75 76 77 ... 100"],
+  [76, 76, "1 ... 74 75 76 77 78 ... 100"],
+  [77, 77, "1 ... 75 76 77 78 79 ... 100"],
+  [78, 78, "1 ... 76 77 78 79 80 ... 100"],
+  [79, 79, "1 ... 77 78 79 80 81 ... 100"],
+  [80, 80, "1 ... 78 79 80 81 82 ... 100"],
+  [81, 81, "1 ... 79 80 81 82 83 ... 100"],
+  [82, 82, "1 ... 80 81 82 83 84 ... 100"],
+  [83, 83, "1 ... 81 82 83 84 85 ... 100"],
+  [84, 84, "1 ... 82 83 84 85 86 ... 100"],
+  [85, 85, "1 ... 83 84 85 86 87 ... 100"],
+  [86, 86, "1 ... 84 85 86 87 88 ... 100"],
+  [87, 87, "1 ... 85 86 87 88 89 ... 100"],
+  [88, 88, "1 ... 86 87 88 89 90 ... 100"],
+  [89, 89, "1 ... 87 88 89 90 91 ... 100"],
+  [90, 90, "1 ... 88 89 90 91 92 ... 100"],
+  [91, 91, "1 ... 89 90 91 92 93 ... 100"],
+  [92, 92, "1 ... 90 91 92 93 94 ... 100"],
+  [93, 93, "1 ... 91 92 93 94 95 ... 100"],
+  [94, 94, "1 ... 92 93 94 95 96 ... 100"],
+  [95, 95, "1 ... 93 94 95 96 97 ... 100"],
+  [96, 100, "1 ... 95 96 97 98 99 100"],
+];
+
+// Table D - explicit edge cases. Item counts are chosen so that
+// T = totalPagesFromCount(items, PAGE_SIZE) still lands on the same
+// frame-algorithm boundaries now that PAGE_SIZE is 5.
+const TABLE_D = [
+  { items: 0, T: 1, shown: false, p: null, frame: "" },
+  { items: 4, T: 1, shown: false, p: null, frame: "" },
+  { items: 5, T: 1, shown: false, p: null, frame: "" },
+  { items: 6, T: 2, shown: true, p: 1, frame: "1 2" },
+  { items: 10, T: 2, shown: true, p: 1, frame: "1 2" },
+  { items: 35, T: 7, shown: true, p: 1, frame: "1 2 3 4 5 6 7" },
+  { items: 36, T: 8, shown: true, p: 1, frame: "1 2 3 4 5 ... 8" },
+  { items: 96, T: 20, shown: true, p: 1, frame: "1 2 3 4 5 6 ... 20" },
+  { items: 97, T: 20, shown: true, p: 20, frame: "1 ... 15 16 17 18 19 20" },
+  { items: 98, T: 20, shown: true, p: 2, frame: "1 2 3 4 5 6 ... 20" },
+  { items: 99, T: 20, shown: true, p: 19, frame: "1 ... 15 16 17 18 19 20" },
+  { items: 100, T: 20, shown: true, p: 10, frame: "1 ... 8 9 10 11 12 ... 20" },
+];
+
+test("Table A conformance (T = 1..12, every page)", () => {
+  for (const [T, ranges] of TABLE_A) {
+    for (const [from, to, expected] of ranges) {
+      for (let p = from; p <= to; p++) {
+        assert.deepStrictEqual(
+          M.paginationFrame(T, p, 5),
+          frame(expected),
+          "T=" + T + " p=" + p,
+        );
+      }
+    }
+  }
+});
+
+test("Table B conformance (T = 20, every page)", () => {
+  for (const [p, expected] of TABLE_B) {
+    assert.deepStrictEqual(
+      M.paginationFrame(20, p, 5),
+      frame(expected),
+      "p=" + p,
+    );
+  }
+});
+
+test("Table C conformance (T = 100, 1000, 12345 samples)", () => {
+  for (const [T, p, expected] of TABLE_C) {
+    assert.deepStrictEqual(
+      M.paginationFrame(T, p, 5),
+      frame(expected),
+      "T=" + T + " p=" + p,
+    );
+  }
+});
+
+test("Table C-2 conformance (T = 100, all pages)", () => {
+  for (const [from, to, expected] of TABLE_C2) {
+    for (let p = from; p <= to; p++) {
+      assert.deepStrictEqual(
+        M.paginationFrame(100, p, 5),
+        frame(expected),
+        "p=" + p,
+      );
+    }
+  }
+});
+
+test("Table D conformance (visibility and edge frames)", () => {
+  for (const row of TABLE_D) {
+    const T = M.totalPagesFromCount(row.items, M.PAGE_SIZE);
+    assert.strictEqual(T, row.T, "T for " + row.items + " items");
+    assert.strictEqual(
+      M.paginationVisible(T),
+      row.shown,
+      "visible for " + row.items + " items",
+    );
+    if (row.shown)
+      assert.deepStrictEqual(
+        M.paginationFrame(T, row.p, 5),
+        frame(row.frame),
+        "items=" + row.items + " p=" + row.p,
+      );
+  }
+});
+
+// --------------------------------------------------------------------------
+// pagination invariants (pagination-specs.md section 10)
+
+test("pagination invariants hold for T = 1..120 and every page", () => {
+  const W = 5;
+  const W_eff = Math.max(3, W);
+  for (let T = 1; T <= 120; T++) {
+    for (let p = 1; p <= T; p++) {
+      const fr = M.paginationFrame(T, p, W);
+      const ctx = "T=" + T + " p=" + p + " frame=" + JSON.stringify(fr);
+
+      assert.ok(Array.isArray(fr) && fr.length > 0, "non-empty " + ctx);
+      assert.strictEqual(fr[0], 1, "first is 1 " + ctx);
+      assert.strictEqual(fr[fr.length - 1], T, "last is T " + ctx);
+      assert.ok(fr.indexOf(p) !== -1, "contains p " + ctx);
+
+      const numbers = fr.filter((t) => t !== "...");
+      assert.strictEqual(new Set(numbers).size, numbers.length, "unique " + ctx);
+      for (let i = 0; i < numbers.length; i++) {
+        assert.ok(Number.isInteger(numbers[i]), "integer " + ctx);
+        assert.ok(numbers[i] >= 1 && numbers[i] <= T, "range " + ctx);
+        if (i > 0) assert.ok(numbers[i] > numbers[i - 1], "ascending " + ctx);
+      }
+
+      const middle = numbers.filter((n) => n !== 1 && n !== T);
+      assert.ok(middle.length <= W_eff, "middle <= W_eff " + ctx);
+      assert.ok(numbers.length <= W_eff + 2, "numbers <= W_eff+2 " + ctx);
+      assert.ok(fr.length <= W_eff + 4, "tokens <= W_eff+4 " + ctx);
+
+      const ellipses = fr.filter((t) => t === "...").length;
+      assert.ok(ellipses <= 2, "at most two ellipses " + ctx);
+      for (let i = 0; i < fr.length; i++) {
+        if (fr[i] !== "...") continue;
+        assert.ok(i > 0 && i < fr.length - 1, "ellipsis not first/last " + ctx);
+        assert.notStrictEqual(fr[i - 1], "...", "no double left " + ctx);
+        assert.notStrictEqual(fr[i + 1], "...", "no double right " + ctx);
+        assert.strictEqual(typeof fr[i - 1], "number", "between numbers l " + ctx);
+        assert.strictEqual(typeof fr[i + 1], "number", "between numbers r " + ctx);
+        if (i === 1) assert.ok(fr[i + 1] - 2 >= 2, "left hides >=2 " + ctx);
+        else assert.ok(T - fr[i - 1] - 1 >= 2, "right hides >=2 " + ctx);
+      }
+
+      if (T <= W_eff + 2) {
+        assert.strictEqual(ellipses, 0, "no ellipsis when small " + ctx);
+        assert.strictEqual(numbers.length, T, "all pages when small " + ctx);
+      }
+      if (T >= W_eff + 3) {
+        assert.ok(ellipses >= 1, "ellipsis when large " + ctx);
+        assert.ok(numbers.length < T, "omission when large " + ctx);
+      }
+
+      assert.strictEqual(M.paginationVisible(T), T >= 2, "visible " + ctx);
+      assert.strictEqual(M.canPreviousPage(p), p > 1, "prev " + ctx);
+      assert.strictEqual(M.canNextPage(p, T), p < T, "next " + ctx);
+    }
+  }
+
+  // Degenerate totals and the special T <= 2 frames.
+  assert.deepStrictEqual(M.paginationFrame(0, 1, W), []);
+  assert.deepStrictEqual(M.paginationFrame(1, 1, W), [1]);
+  assert.deepStrictEqual(M.paginationFrame(2, 1, W), [1, 2]);
+  assert.deepStrictEqual(M.paginationFrame(2, 2, W), [1, 2]);
+  assert.strictEqual(M.paginationVisible(0), false);
+  assert.strictEqual(M.paginationVisible(1), false);
+  assert.strictEqual(M.paginationVisible(2), true);
+  // A window below the minimum behaves exactly as 3.
+  assert.deepStrictEqual(M.paginationFrame(9, 5, 0), M.paginationFrame(9, 5, 3));
+  assert.deepStrictEqual(M.paginationFrame(9, 5, -10), M.paginationFrame(9, 5, 3));
+});
+
+test("frames mirror consistently except the (9,5) tie", () => {
+  for (let T = 1; T <= 120; T++) {
+    for (let p = 1; p <= T; p++) {
+      if (T === 9 && p === 5) continue;
+      const a = M.paginationFrame(T, p, 5);
+      const b = M.paginationFrame(T, T + 1 - p, 5);
+      const mirrored = [];
+      for (let i = b.length - 1; i >= 0; i--)
+        mirrored.push(b[i] === "..." ? "..." : T + 1 - b[i]);
+      assert.deepStrictEqual(a, mirrored, "mirror T=" + T + " p=" + p);
+    }
+  }
+  // The documented self-mirror exception really is asymmetric.
+  assert.notDeepStrictEqual(
+    M.paginationFrame(9, 5, 5),
+    [1, "...", 4, 5, 6, 7, 8, 9],
+  );
+});
+
+// --------------------------------------------------------------------------
 // live round-trip (skipped when gh is unavailable or not signed in)
 
-test("live: the real gh command parses into notifications", () => {
+test("live: the real bounded gh command parses into one page", () => {
   const probe = spawnSync("bash", ["-lc", "command -v gh"], {
     encoding: "utf8",
   });
@@ -597,9 +1121,11 @@ test("live: the real gh command parses into notifications", () => {
     console.log("       (skipped: gh is not on PATH)");
     return;
   }
-  const run = spawnSync("bash", ["-lc", M.GH_COMMAND], {
+
+  const run = spawnSync("bash", ["-lc", M.ghCommand(1)], {
     encoding: "utf8",
     timeout: 60000,
+    maxBuffer: 4 * 1024 * 1024,
   });
   if (run.status !== 0) {
     console.log(
@@ -611,21 +1137,38 @@ test("live: the real gh command parses into notifications", () => {
     );
     return;
   }
-  const result = M.parseNotifications(0, run.stdout, run.stderr);
+
+  const result = M.parseNotifications(0, run.stdout, run.stderr, 1);
   assert.strictEqual(result.ok, true, "live output parsed: " + result.error);
-  result.items.forEach((entry) => {
-    assert.strictEqual(typeof entry.repoName, "string");
-    assert.strictEqual(typeof entry.repoUrl, "string");
-    assert.strictEqual(typeof entry.title, "string");
-    assert.strictEqual(typeof entry.subjectUrl, "string");
-    assert.ok(
-      entry.title !== "" || entry.subjectUrl !== "",
-      "every item is clickable or readable",
-    );
-  });
-  console.log(
-    "       (live: " + result.items.length + " unread notification(s) parsed)",
+  assert.ok(result.items.length <= M.PAGE_SIZE, "one page at most");
+  assert.strictEqual(
+    result.totalPages,
+    Math.max(1, Math.ceil(result.totalCount / M.PAGE_SIZE)),
   );
+  console.log(
+    "       (live: " +
+      result.totalCount +
+      " unread, page " +
+      result.page +
+      " of " +
+      result.totalPages +
+      ", " +
+      result.items.length +
+      " rows)",
+  );
+
+  if (result.totalPages >= 2) {
+    const run2 = spawnSync("bash", ["-lc", M.ghCommand(2)], {
+      encoding: "utf8",
+      timeout: 60000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    assert.strictEqual(run2.status, 0, "page 2 command succeeded");
+    const page2 = M.parseNotifications(0, run2.stdout, run2.stderr, 2);
+    assert.strictEqual(page2.ok, true, "page 2 parsed: " + page2.error);
+    assert.strictEqual(page2.page, 2);
+    assert.ok(page2.items.length <= M.PAGE_SIZE);
+  }
 });
 
 async function run() {

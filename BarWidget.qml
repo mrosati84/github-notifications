@@ -7,15 +7,17 @@ import "Model.js" as Model
 
 // GitHub Notifications - unread GitHub notifications in the Omarchy bar.
 //
-// One `gh api notifications` call every `intervalSeconds` (300 by default)
+// One bounded `gh api notifications` fetch (one page of 5, plus a one-item
+// count probe for the exact total) every `intervalSeconds` (300 by default)
 // feeds one icon: the GitHub mark is lit while there is something unread and
 // dimmed while the inbox is quiet. Clicking it opens the list, where the
 // repository and the subject of every notification are separate clickable
 // links.
 //
 // Polling lives here, never in the panel: one Timer and one reusable Process,
-// so at most one gh call is ever in flight. The panel mirrors `view` and can
-// only ask this widget to refresh.
+// so at most one gh fetch is ever in flight. The panel mirrors `view`, can ask
+// for a specific page, and a page request that arrives mid-fetch queues as
+// `pendingPage` instead of starting a second process.
 BarWidget {
     id: root
     moduleName: "io.github.mrosati84.github-notifications"
@@ -28,16 +30,38 @@ BarWidget {
 
     // ---- state --------------------------------------------------------------
     property var view: Model.initialView()
+    // The page the running (or next) fetch is for, and the page a click asked
+    // for while a fetch was already in flight. Both are plain numbers; the page
+    // in `view` is only ever the page that actually came back.
+    property int requestedPage: 1
+    property int pendingPage: 0
 
+    // The panel reads this to grey out pagination while a fetch is in flight.
+    readonly property bool busy: proc.running
     readonly property int count: Model.countOf(root.view)
     readonly property bool hasNotifications: Model.hasNotifications(root.view)
     readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
 
-    // ---- polling ------------------------------------------------------------
-    function refresh() {
-        if (proc.running)
+    // ---- polling & paging ---------------------------------------------------
+    // Start a fetch for page `k`, clamped into 1..totalPages. The command is
+    // assigned explicitly before the run starts, so the page number can never
+    // race the process. A request that arrives while a fetch is in flight is
+    // remembered in `pendingPage` and taken up when the process exits, so at
+    // most one gh call is ever in flight.
+    function loadPage(k) {
+        if (proc.running) {
+            root.pendingPage = k;
             return;
+        }
+        var target = Model.clampPage(k, root.view.totalPages || 1);
+        root.requestedPage = target;
+        proc.command = Model.ghArgv(target);
         proc.running = true;
+    }
+
+    // A full check always returns to the first page.
+    function refresh() {
+        root.loadPage(1);
     }
 
     // BarWidget.broadcast() target, so an IPC refresh reaches every bar instance
@@ -46,9 +70,27 @@ BarWidget {
         root.refresh();
     }
 
+    function goToPage(k) {
+        root.loadPage(k);
+    }
+
+    // Both no-op at their boundary, as the spec requires: a disabled chevron
+    // must never navigate (and must not spend a fetch re-loading the same page).
+    function previousPage() {
+        if (Model.canPreviousPage(root.view.page))
+            root.goToPage(root.view.page - 1);
+    }
+
+    function nextPage() {
+        if (Model.canNextPage(root.view.page, root.view.totalPages))
+            root.goToPage(root.view.page + 1);
+    }
+
     Process {
         id: proc
-        command: Model.ghArgv()
+        // No `command:` binding: `loadPage()` assigns the argv for the exact
+        // page immediately before it sets `running`, so the page fetch cannot
+        // race the run.
         stdout: StdioCollector {
             id: ghStdout
             waitForEnd: true
@@ -61,13 +103,31 @@ BarWidget {
             stallTimer.restart()
         onExited: function (exitCode) {
             stallTimer.stop();
-            var result = Model.parseNotifications(exitCode, ghStdout.text, ghStderr.text);
+            var result = Model.parseNotifications(exitCode, ghStdout.text, ghStderr.text, root.requestedPage);
             root.view = Model.viewAfterFetch(root.view, result, Date.now());
             var line = "GitHub Notifications: " + Model.statusLine(root.view);
             if (root.view.status === "error")
                 console.warn(line + " - " + root.view.error);
             else
                 console.log(line);
+
+            // If the requested page fell past the end, the parser clamped the
+            // result to the last page, so go and show that page. Otherwise, if a
+            // click was queued while this fetch ran, take it up now. Both go
+            // through Qt.callLater, and loadPage() refuses to start while a
+            // process is running, so a queued navigation can never race a fetch.
+            if (result.ok && result.page !== root.requestedPage) {
+                var clamped = result.page;
+                Qt.callLater(function () {
+                    root.loadPage(clamped);
+                });
+            } else if (root.pendingPage > 0) {
+                var pending = root.pendingPage;
+                root.pendingPage = 0;
+                Qt.callLater(function () {
+                    root.loadPage(pending);
+                });
+            }
         }
     }
 
@@ -95,7 +155,9 @@ BarWidget {
         running: true
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.refresh()
+        // Keep the user's current page on a periodic tick; only an explicit
+        // refresh (open, middle click, IPC) returns to page 1.
+        onTriggered: root.loadPage(root.view.page || 1)
     }
 
     // ---- panel --------------------------------------------------------------
