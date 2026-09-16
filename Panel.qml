@@ -393,10 +393,22 @@ Panel {
                         PanelActionButton {
                             id: refreshButton
                             Layout.alignment: Qt.AlignVCenter
+                            // Spins while a fetch is in flight and snaps back to rest
+                            // the moment it settles.
+                            transformOrigin: Item.Center
                             iconText: "\uf021"
                             tooltipText: "Refresh now"
                             foreground: root.foreground
                             onClicked: root.refreshNow()
+
+                            RotationAnimator on rotation {
+                                running: root.hostWidget !== null && root.hostWidget.busy === true
+                                from: 0
+                                to: 360
+                                duration: 900
+                                loops: Animation.Infinite
+                                onRunningChanged: if (!running) refreshButton.rotation = 0
+                            }
                         }
                     }
                 }
