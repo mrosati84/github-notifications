@@ -686,13 +686,20 @@ test("an error keeps the stale list labelled as stale", () => {
   );
   assert.strictEqual(M.errorHint(stale), "Showing the last list that loaded.");
   assert.strictEqual(M.errorHint(good), "");
-  assert.match(M.footerText(stale), /^Last good check /);
+  assert.strictEqual(M.footerText(stale), "Last check at " + M.formatTime(2000));
   assert.strictEqual(M.errorHint(stale) !== "", true);
   assert.strictEqual(
     M.errorHint(
       M.viewAfterFetch(undefined, { ok: false, items: [], error: "x" }, 1),
     ),
     "Click the mark, or press r, to check again.",
+  );
+  // A never-checked error has a falsy checkedAt, so it must still say so
+  // instead of rendering a phantom timestamp. (A truthy checkedAt, as the
+  // existing errorHint case above uses, is a check that has a time.)
+  assert.strictEqual(
+    M.footerText(M.viewAfterFetch(undefined, { ok: false, items: [], error: "x" }, 0)),
+    "No successful check yet",
   );
 });
 
@@ -725,7 +732,7 @@ test("times render as local HH:MM and never as NaN", () => {
   assert.strictEqual(M.formatTime(0), "");
   assert.strictEqual(M.formatTime(undefined), "");
   assert.strictEqual(M.footerText(M.initialView()), "");
-  assert.match(M.footerText(viewFor(0, [], 1, midday)), /^Checked 09:05$/);
+  assert.strictEqual(M.footerText(viewFor(0, [], 1, midday)), "Last check at 09:05");
 });
 
 test("the tooltip always explains the three clicks", () => {

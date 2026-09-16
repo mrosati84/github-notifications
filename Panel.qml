@@ -90,8 +90,10 @@ Panel {
     // Both links go through the Omarchy browser launcher rather than xdg-open, so
     // an already-open browser gets the URL in a new tab.
     function openUrl(url) {
-        if (Model.isSafeUrl(url))
-            Quickshell.execDetached(["omarchy-launch-browser", url]);
+        if (!Model.isSafeUrl(url))
+            return;
+        Quickshell.execDetached(["omarchy-launch-browser", url]);
+        root.close();
     }
 
     function openRepo(item) {
@@ -232,7 +234,7 @@ Panel {
                     PanelHero {
                         id: hero
                         width: parent.width
-                        title: "GitHub notifications"
+                        title: "GitHub Notifications"
                         meta: Model.heroMeta(root.view)
                         detail: Model.statusPill(root.view)
                         foreground: root.foreground

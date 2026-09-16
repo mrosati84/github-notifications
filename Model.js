@@ -719,8 +719,7 @@ function errorHint(view) {
 function footerText(view) {
   var checked = view ? view.checkedAt : 0;
   if (!checked) return isError(view) ? "No successful check yet" : "";
-  if (isError(view)) return "Last good check " + formatTime(checked);
-  return "Checked " + formatTime(checked);
+  return "Last check at " + formatTime(checked);
 }
 
 function tooltip(view) {
