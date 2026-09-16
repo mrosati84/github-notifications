@@ -594,6 +594,25 @@ test("the repository link is repository.html_url, unchanged", () => {
   assert.strictEqual(M.repoLink(null), "");
 });
 
+test("only absolute http(s) URLs are safe to launch", () => {
+  assert.strictEqual(M.isSafeUrl("https://github.com/o/r"), true);
+  assert.strictEqual(M.isSafeUrl("http://example.com/x"), true);
+  assert.strictEqual(M.isSafeUrl("HTTPS://GitHub.com/x"), true);
+  assert.strictEqual(
+    M.isSafeUrl("https://api.github.com/repos/o/r/issues/1"),
+    true,
+  );
+  assert.strictEqual(M.isSafeUrl("file:///etc/passwd"), false);
+  assert.strictEqual(M.isSafeUrl("javascript:alert(1)"), false);
+  assert.strictEqual(M.isSafeUrl("data:text/html,<b>x</b>"), false);
+  assert.strictEqual(M.isSafeUrl("ftp://example.com"), false);
+  assert.strictEqual(M.isSafeUrl("-flag"), false);
+  assert.strictEqual(M.isSafeUrl("https://exa mple.com"), false);
+  assert.strictEqual(M.isSafeUrl(""), false);
+  assert.strictEqual(M.isSafeUrl(undefined), false);
+  assert.strictEqual(M.isSafeUrl(null), false);
+});
+
 // --------------------------------------------------------------------------
 // display strings
 

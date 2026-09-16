@@ -548,6 +548,14 @@ function subjectLink(item, mode) {
   return text(item.subjectUrl);
 }
 
+// Only an absolute http(s) URL may ever be handed to the browser launcher.
+// Anything else - file:, javascript:, data:, an option-like "-flag", a relative
+// path, or a value with whitespace in it - is refused, so a hostile or malformed
+// link can never reach the launcher.
+function isSafeUrl(url) {
+  return /^https?:\/\/[^\s]+$/i.test(text(url));
+}
+
 function notificationsPageUrl() {
   return "https://github.com/notifications";
 }
@@ -775,6 +783,7 @@ if (typeof module !== "undefined") {
     apiToWebUrl: apiToWebUrl,
     repoLink: repoLink,
     subjectLink: subjectLink,
+    isSafeUrl: isSafeUrl,
     notificationsPageUrl: notificationsPageUrl,
     countOf: countOf,
     pageItemCount: pageItemCount,

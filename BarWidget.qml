@@ -1,7 +1,6 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
-import qs.Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -26,7 +25,7 @@ BarWidget {
     readonly property int intervalSeconds: Model.clampIntervalSeconds(root.setting("intervalSeconds", Model.DEFAULT_INTERVAL_SECONDS))
     // "api" opens subject.url exactly as gh returns it; "web" rewrites it to the
     // matching github.com page. See README.md.
-    readonly property string subjectLinkMode: String(root.setting("subjectLinks", "api")) === "web" ? "web" : "api"
+    readonly property string subjectLinkMode: String(root.setting("subjectLinks", "web")) === "web" ? "web" : "api"
 
     // ---- state --------------------------------------------------------------
     property var view: Model.initialView()
@@ -35,6 +34,10 @@ BarWidget {
     // in `view` is only ever the page that actually came back.
     property int requestedPage: 1
     property int pendingPage: 0
+    // Set by the stall timer when it cuts a hung fetch loose, so the process's
+    // own onExited knows not to overwrite the timeout message with a generic
+    // parse/exit error. Cleared when the next fetch starts.
+    property bool stalled: false
 
     // The panel reads this to grey out pagination while a fetch is in flight.
     readonly property bool busy: proc.running
@@ -55,6 +58,7 @@ BarWidget {
         }
         var target = Model.clampPage(k, root.view.totalPages || 1);
         root.requestedPage = target;
+        root.stalled = false;
         proc.command = Model.ghArgv(target);
         proc.running = true;
     }
@@ -103,6 +107,12 @@ BarWidget {
             stallTimer.restart()
         onExited: function (exitCode) {
             stallTimer.stop();
+            // The stall timer already wrote the user-facing message and is about
+            // to receive this exit from the process it killed; keep that message.
+            if (root.stalled) {
+                root.stalled = false;
+                return;
+            }
             var result = Model.parseNotifications(exitCode, ghStdout.text, ghStderr.text, root.requestedPage);
             root.view = Model.viewAfterFetch(root.view, result, Date.now());
             var line = "GitHub Notifications: " + Model.statusLine(root.view);
@@ -140,6 +150,7 @@ BarWidget {
         onTriggered: {
             if (!proc.running)
                 return;
+            root.stalled = true;
             proc.running = false;
             console.warn("GitHub Notifications: gh did not answer within a minute");
             root.view = Model.viewAfterFetch(root.view, {

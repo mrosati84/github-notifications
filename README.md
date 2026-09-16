@@ -188,8 +188,11 @@ omarchy-shell io.github.mrosati84.github-notifications refresh
 | `Panel.qml`         | the popup: header, notification rows with two links each, pagination, footer |
 | `GitHubMark.qml`    | the SVG mark, tinted to the theme, lit or dimmed                        |
 | `assets/github.svg` | the GitHub mark itself (white; tinted at render time)                   |
-| `Model.js`          | pure logic: parsing, link rewriting, failure text, display strings      |
-| `test-model.js`     | node self-check for `Model.js` (49 tests, includes one live round-trip) |
+| `Model.js`          | pure logic: parsing, link rewriting, URL safety, failure text, display strings |
+| `test-model.js`     | node self-check for `Model.js` (50 tests, includes one live round-trip) |
+| `pagination-specs.md` | the framework-independent pagination spec the frame algorithm implements, plus the GitHub transport/bounds appendix |
+| `screenshots/`      | README screenshots (`notif-1.png`, `notif-2.png`)                       |
+| `LICENSE`           | MIT                                                                     |
 
 ## Testing
 

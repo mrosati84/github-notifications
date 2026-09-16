@@ -32,14 +32,13 @@ Panel {
     readonly property color dim: Qt.darker(foreground, 1.5)
     readonly property color accent: Color.accent
     readonly property color warn: bar ? bar.urgent : Color.urgent
-    readonly property color surface: Color.popups.background
     readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
     readonly property var view: hostWidget && hostWidget.view ? hostWidget.view : Model.initialView()
     readonly property var items: root.view.items || []
     readonly property int rowCount: root.items.length
     readonly property bool isError: Model.isError(root.view)
-    readonly property string linkMode: hostWidget ? hostWidget.subjectLinkMode : "api"
+    readonly property string linkMode: hostWidget ? hostWidget.subjectLinkMode : "web"
     readonly property var focusedItem: root.rowCount > 0 ? root.items[Math.min(root.focusIndex, root.rowCount - 1)] : null
 
     // ---- pagination ---------------------------------------------------------
@@ -88,7 +87,7 @@ Panel {
     // Both links go through the Omarchy browser launcher rather than xdg-open, so
     // an already-open browser gets the URL in a new tab.
     function openUrl(url) {
-        if (url && url !== "")
+        if (Model.isSafeUrl(url))
             Quickshell.execDetached(["omarchy-launch-browser", url]);
     }
 
@@ -141,7 +140,8 @@ Panel {
             return;
         root.cursorActive = false;
         root.focusIndex = 0;
-        root.refreshNow();
+        // The host widget owns the fetch and refreshes once in its own open()
+        // path; refreshing here as well would queue a second sequential fetch.
         Qt.callLater(function () {
             keyCatcher.forceActiveFocus();
         });
