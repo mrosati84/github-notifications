@@ -446,8 +446,9 @@ Panel {
         return false;
     }
 
-    // One notification: the repository on top, the subject under it. Each line is
-    // its own link, so the two URLs the API hands over stay separately clickable.
+    // One notification: the repository, the subject, then the updated time. The
+    // first two lines are their own links, so the two URLs the API hands over stay
+    // separately clickable; the date line is plain text.
     component NotificationRow: CursorSurface {
         id: row
 
@@ -518,6 +519,18 @@ Panel {
                     onEntered: root.setRowCursor(row.rowIndex)
                     onClicked: root.openSubject(row.item)
                 }
+            }
+
+            Text {
+                id: updatedLabel
+                width: parent.width
+                textFormat: Text.PlainText
+                text: row.item ? Model.formatUpdatedAt(row.item.updatedAt) : ""
+                visible: text !== ""
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
             }
         }
     }

@@ -294,20 +294,42 @@ test("retained strings are truncated to their caps", () => {
   assert.strictEqual(first.subjectUrl.length, M.MAX_URL_CHARS);
 });
 
-test("only the four wanted fields survive", () => {
+test("only the five wanted fields survive", () => {
   const result = parseCombined(20, [PAGE_ONE], 1);
   assert.deepStrictEqual(result.items[0], {
     repoName: "widgets",
     repoUrl: "https://github.com/acme/widgets",
     title: "Implement proxy for remote assets",
     subjectUrl: "https://api.github.com/repos/acme/widgets/issues/270",
+    updatedAt: "2026-01-05T09:00:00Z",
   });
   assert.deepStrictEqual(Object.keys(result.items[0]).sort(), [
     "repoName",
     "repoUrl",
     "subjectUrl",
     "title",
+    "updatedAt",
   ]);
+});
+
+test("updated_at is retained, capped, and never undefined", () => {
+  // End-to-end: PAGE_ONE[0] carries a date, PAGE_ONE[1] does not.
+  const result = parseCombined(20, [PAGE_ONE], 1);
+  assert.strictEqual(result.items[0].updatedAt, "2026-01-05T09:00:00Z");
+
+  const endToEnd = parseCombined(20, [PAGE_ONE[1]], 1);
+  assert.strictEqual(endToEnd.items[0].updatedAt, "");
+
+  const missing = M.normalizeItem({ subject: { title: "no date" } });
+  assert.strictEqual(missing.updatedAt, "");
+  assert.notStrictEqual(missing.updatedAt, undefined);
+
+  const long = M.normalizeItem({
+    subject: { title: "long date" },
+    updated_at: "z".repeat(200),
+  });
+  assert.strictEqual(long.updatedAt, "z".repeat(M.MAX_UPDATED_CHARS));
+  assert.strictEqual(long.updatedAt.length, M.MAX_UPDATED_CHARS);
 });
 
 test("missing pieces become empty strings, never undefined", () => {
@@ -733,6 +755,45 @@ test("times render as local HH:MM and never as NaN", () => {
   assert.strictEqual(M.formatTime(undefined), "");
   assert.strictEqual(M.footerText(M.initialView()), "");
   assert.strictEqual(M.footerText(viewFor(0, [], 1, midday)), "Last check at 09:05");
+});
+
+test("formatUpdatedAt has the exact format under explicit timezones", () => {
+  // A child process per zone, so the ambient test timezone (CEST here) cannot
+  // mask a formatter that ignores TZ or hardcodes UTC.
+  function inZone(zone, iso) {
+    const script =
+      'const M = require("./Model.js");' +
+      "process.stdout.write(M.formatUpdatedAt(" +
+      JSON.stringify(iso) +
+      "));";
+    const run = spawnSync(process.execPath, ["-e", script], {
+      cwd: __dirname,
+      encoding: "utf8",
+      env: { ...process.env, TZ: zone },
+    });
+    assert.strictEqual(run.status, 0, String(run.stderr));
+    return run.stdout;
+  }
+
+  assert.strictEqual(inZone("UTC", "2026-09-10T11:28:42Z"), "2026-09-10 11:28");
+  assert.strictEqual(
+    inZone("America/New_York", "2026-09-10T11:28:42Z"),
+    "2026-09-10 07:28",
+  );
+  assert.strictEqual(
+    inZone("Asia/Tokyo", "2026-09-10T11:28:42Z"),
+    "2026-09-10 20:28",
+  );
+  assert.strictEqual(inZone("UTC", "2026-01-05T03:04:05Z"), "2026-01-05 03:04");
+});
+
+test("formatUpdatedAt returns empty for missing or malformed input", () => {
+  assert.strictEqual(M.formatUpdatedAt(""), "");
+  assert.strictEqual(M.formatUpdatedAt(undefined), "");
+  assert.strictEqual(M.formatUpdatedAt(null), "");
+  assert.strictEqual(M.formatUpdatedAt("not a date"), "");
+  assert.ok(M.formatUpdatedAt("not a date").indexOf("NaN") === -1);
+  assert.ok(M.formatUpdatedAt("not a date").indexOf("Invalid") === -1);
 });
 
 test("the tooltip always explains the three clicks", () => {

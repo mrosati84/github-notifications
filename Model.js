@@ -4,9 +4,10 @@
 //   - BarWidget.qml / Panel.qml import it as a QML JS module;
 //   - test-model.js requires it from Node (module.exports guard at the bottom).
 //
-// The widget is about exactly four fields of `gh api notifications`:
-//     repository.name, repository.html_url, subject.title, subject.url
-// Everything here turns gh's output into those four fields, turns gh's failures
+// The widget is about exactly five fields of `gh api notifications`:
+//     repository.name, repository.html_url, subject.title, subject.url,
+//     updated_at
+// Everything here turns gh's output into those five fields, turns gh's failures
 // into one sentence worth reading, and builds every display string the bar icon
 // and the panel show. No QML, no timers, no I/O - which is what lets node run
 // this file directly.
@@ -35,6 +36,7 @@ var MAX_STDERR_BYTES = 8192; // 8 KiB
 var MAX_NAME_CHARS = 200;
 var MAX_TITLE_CHARS = 300;
 var MAX_URL_CHARS = 512;
+var MAX_UPDATED_CHARS = 40;
 
 // The count probe prints this sentinel on its own line; the loader splits the
 // combined stdout on it to separate the probe response from the page response.
@@ -192,7 +194,7 @@ function clampPage(page, totalPages) {
 }
 
 // ---------------------------------------------------------------------------
-// gh output -> the four fields
+// gh output -> the five fields
 
 // Anything nested up to a few levels lands as one flat list of objects. The cap
 // lets a caller stop as soon as enough items are in hand.
@@ -218,9 +220,10 @@ function truncateChars(value, max) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
-// Only the four fields the widget is about. An entry with no repository, no
+// Only the five fields the widget is about. An entry with no repository, no
 // title and no url is nothing anyone can read or click, so it is dropped rather
-// than rendered as an empty row. Retained strings are capped.
+// than rendered as an empty row. Retained strings are capped; `updated_at` is
+// kept as a raw ISO-8601 string and formatted at display time.
 function normalizeItem(raw) {
   if (!raw || typeof raw !== "object") return null;
   var repository = raw.repository || {};
@@ -230,6 +233,7 @@ function normalizeItem(raw) {
     repoUrl: truncateChars(repository.html_url, MAX_URL_CHARS),
     title: truncateChars(subject.title, MAX_TITLE_CHARS),
     subjectUrl: truncateChars(subject.url, MAX_URL_CHARS),
+    updatedAt: truncateChars(raw.updated_at, MAX_UPDATED_CHARS),
   };
   if (
     item.repoName === "" &&
@@ -646,6 +650,26 @@ function formatTime(ms) {
   return hours + ":" + minutes;
 }
 
+// A notification's `updated_at` (ISO-8601 UTC) as `YYYY-MM-DD HH:MM` in the
+// OS-local timezone. Built from the local getters rather than a locale string,
+// so the format is stable everywhere. Anything unparseable returns "" so the
+// row can hide the line instead of showing NaN or Invalid Date.
+function formatUpdatedAt(iso) {
+  var value = text(iso);
+  if (value === "") return "";
+  var when = new Date(value);
+  if (!isFinite(when.getTime())) return "";
+  var month = String(when.getMonth() + 1);
+  if (month.length < 2) month = "0" + month;
+  var day = String(when.getDate());
+  if (day.length < 2) day = "0" + day;
+  var hours = String(when.getHours());
+  if (hours.length < 2) hours = "0" + hours;
+  var minutes = String(when.getMinutes());
+  if (minutes.length < 2) minutes = "0" + minutes;
+  return when.getFullYear() + "-" + month + "-" + day + " " + hours + ":" + minutes;
+}
+
 // The pill next to the panel title.
 function statusPill(view) {
   if (isError(view)) return "GH ERROR";
@@ -764,6 +788,7 @@ if (typeof module !== "undefined") {
     MAX_NAME_CHARS: MAX_NAME_CHARS,
     MAX_TITLE_CHARS: MAX_TITLE_CHARS,
     MAX_URL_CHARS: MAX_URL_CHARS,
+    MAX_UPDATED_CHARS: MAX_UPDATED_CHARS,
     COUNT_MARKER_TEXT: COUNT_MARKER_TEXT,
     COUNT_MARKER: COUNT_MARKER,
     ghCommand: ghCommand,
@@ -804,6 +829,7 @@ if (typeof module !== "undefined") {
     repositoryCount: repositoryCount,
     repoBreakdown: repoBreakdown,
     formatTime: formatTime,
+    formatUpdatedAt: formatUpdatedAt,
     statusPill: statusPill,
     heroMeta: heroMeta,
     statusLine: statusLine,
