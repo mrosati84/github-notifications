@@ -12,7 +12,8 @@ import "Model.js" as Model
 // and asks the widget to refresh, so the icon and the list can never disagree.
 // Every row offers two separate links - the repository name and the subject
 // title - and the arrow keys move a cursor that both mouse hover and keyboard
-// driving share, so exactly one row is ever highlighted.
+// driving share, so exactly one row is ever highlighted. `x` marks that row's
+// notification done, and the widget does the request.
 Panel {
     id: root
     moduleName: "io.github.mrosati84.github-notifications"
@@ -113,6 +114,20 @@ Panel {
         root.openRepo(root.focusedItem);
     }
 
+    // `x` on the highlighted notification: mark it done, which the widget does
+    // with one `DELETE notifications/threads/<id>` before reloading the list.
+    // The kit's key catcher turns x/X into deleteRequested and consumes the key,
+    // so nothing here sees it as text. Only a row that is actually highlighted
+    // is acted on: an empty list, or a page just switched to (which drops the
+    // cursor), leaves `cursorActive` false and the press does nothing - the same
+    // guard the shell's own panels use for their delete key.
+    function markFocusedDone() {
+        if (!root.cursorActive || !root.focusedItem)
+            return;
+        if (hostWidget && typeof hostWidget.markDone === "function")
+            hostWidget.markDone(root.focusedItem);
+    }
+
     function setRowCursor(index) {
         root.cursorActive = true;
         root.focusIndex = index;
@@ -202,6 +217,10 @@ Panel {
                     root.scrollBy(dx * Style.space(48));
             }
             onActivateRequested: root.activateFocused()
+            // `x` / `X`, bound by the kit rather than by any keymap of ours: it
+            // is the same deleteRequested signal every panel gets, and there is
+            // no setting that can rebind or disable it.
+            onDeleteRequested: root.markFocusedDone()
             onCloseRequested: root.close()
             onTabRequested: function (direction) {
                 root.switchPanel(direction);
@@ -422,7 +441,7 @@ Panel {
                         Button {
                             Layout.alignment: Qt.AlignVCenter
                             visible: root.rowCount > 0
-                            enabled: root.hostWidget !== null && root.hostWidget.markingRead !== true
+                            enabled: root.hostWidget !== null && root.hostWidget.marking !== true
                             text: "Mark all read"
                             foreground: root.foreground
                             tooltipText: "Mark all read"
@@ -443,7 +462,7 @@ Panel {
                             onClicked: root.refreshNow()
 
                             RotationAnimator on rotation {
-                                running: root.hostWidget !== null && (root.hostWidget.busy === true || root.hostWidget.markingRead === true)
+                                running: root.hostWidget !== null && (root.hostWidget.busy === true || root.hostWidget.marking === true)
                                 from: 0
                                 to: 360
                                 duration: 900

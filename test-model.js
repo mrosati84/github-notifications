@@ -230,6 +230,122 @@ test("parseMarkAllRead classifies success and failure", () => {
 });
 
 // --------------------------------------------------------------------------
+// mark one notification done (command + classifier only: never a live DELETE,
+// it would dismiss a real thread in the user's GitHub inbox)
+
+test("the mark-done command is exactly one DELETE of that thread", () => {
+  assert.strictEqual(
+    M.markDoneCommand("10000000001"),
+    "gh api --method DELETE notifications/threads/10000000001",
+  );
+  assert.deepStrictEqual(M.markDoneArgv("10000000001"), [
+    "bash",
+    "-lc",
+    "gh api --method DELETE notifications/threads/10000000001",
+  ]);
+  assert.ok(M.markDoneCommand("7").indexOf("--method DELETE") !== -1);
+  assert.ok(M.markDoneCommand("7").indexOf("notifications/threads/7") !== -1);
+  // gh sends `id` as a JSON string, but a bare number is accepted the same way.
+  assert.strictEqual(
+    M.markDoneCommand(10000000001),
+    "gh api --method DELETE notifications/threads/10000000001",
+  );
+  // The endpoint takes the thread id in the path and nothing else: no body, no
+  // last_read_at, no pagination.
+  assert.strictEqual(M.markDoneCommand("7").indexOf("last_read_at"), -1);
+  assert.ok(!/--paginate|--slurp/.test(M.markDoneCommand("7")));
+});
+
+test("an id that is not a bare digit run never reaches the shell", () => {
+  // "" is the caller's signal that there is nothing to send.
+  assert.strictEqual(M.markDoneCommand(""), "");
+  assert.strictEqual(M.markDoneCommand(null), "");
+  assert.strictEqual(M.markDoneCommand(undefined), "");
+  assert.deepStrictEqual(M.markDoneArgv(""), []);
+  assert.deepStrictEqual(M.markDoneArgv(undefined), []);
+
+  const bad = [
+    "1; rm -rf /",
+    "1 && gh api --method PUT notifications",
+    "$(rm -rf /)",
+    "threads/1",
+    "1 2",
+    "-1",
+    "+1",
+    "1e3",
+    "1.0",
+    "0x1",
+    "abc",
+    "1\n2",
+    " 42 ",
+    "9".repeat(M.MAX_ID_CHARS + 1),
+  ];
+  for (const value of bad) {
+    assert.strictEqual(M.markDoneCommand(value), "", value);
+    assert.deepStrictEqual(M.markDoneArgv(value), [], value);
+  }
+
+  // The cap is what bounds the shell string, and the longest legal id fits.
+  assert.strictEqual(M.MAX_ID_CHARS, 20);
+  const longest = "9".repeat(M.MAX_ID_CHARS);
+  assert.strictEqual(
+    M.markDoneCommand(longest),
+    "gh api --method DELETE notifications/threads/" + longest,
+  );
+});
+
+test("notificationId keeps the ids gh sends and refuses everything else", () => {
+  assert.strictEqual(M.notificationId("10000000001"), "10000000001");
+  assert.strictEqual(M.notificationId(42), "42");
+  assert.strictEqual(M.notificationId("0"), "0");
+  assert.strictEqual(M.notificationId(" 42 "), "");
+  assert.strictEqual(M.notificationId(true), "");
+  assert.strictEqual(M.notificationId({}), "");
+  assert.strictEqual(M.notificationId(""), "");
+});
+
+test("a page's ids survive the parse, and a hostile one is neutralised", () => {
+  const result = parseCombined(20, [PAGE_ONE[0], PAGE_TWO[0]], 1);
+  assert.strictEqual(result.items[0].id, "10000000001");
+  assert.strictEqual(result.items[1].id, "3");
+  assert.strictEqual(
+    M.markDoneCommand(result.items[0].id),
+    "gh api --method DELETE notifications/threads/10000000001",
+  );
+
+  const hostile = parseCombined(20, [{ ...PAGE_ONE[0], id: "1; rm -rf /" }], 1);
+  assert.strictEqual(hostile.items[0].id, "");
+  assert.deepStrictEqual(M.markDoneArgv(hostile.items[0].id), []);
+
+  // An entry the API sent no id for is still a readable row; only `x` is a
+  // no-op for it.
+  const noId = parseCombined(20, [{ subject: { title: "no id" } }], 1);
+  assert.strictEqual(noId.items[0].id, "");
+  assert.strictEqual(noId.items[0].title, "no id");
+});
+
+test("parseMarkDone classifies success and failure", () => {
+  // 204 No Content is the success case: gh exits 0 and prints nothing.
+  assert.deepStrictEqual(M.parseMarkDone(0, "", ""), { ok: true, error: "" });
+
+  const failed = M.parseMarkDone(1, "", "gh: HTTP 404: Not Found");
+  assert.strictEqual(failed.ok, false);
+  assert.match(failed.error, /404/);
+
+  // gh sometimes writes the failure to stdout; both streams are classified.
+  assert.match(
+    M.parseMarkDone(1, "gh: HTTP 401: Bad credentials", "").error,
+    /not authenticated/,
+  );
+
+  // Same classifier as the PUT, so both mark actions fail identically.
+  assert.deepStrictEqual(
+    M.parseMarkDone(1, "out", "err"),
+    M.parseMarkAllRead(1, "out", "err"),
+  );
+});
+
+// --------------------------------------------------------------------------
 // probe / count / page parsing
 
 test("splitHeadersBody and parseLinkPages read gh's --include shape", () => {
@@ -325,9 +441,10 @@ test("retained strings are truncated to their caps", () => {
   assert.strictEqual(first.subjectUrl.length, M.MAX_URL_CHARS);
 });
 
-test("only the five wanted fields survive", () => {
+test("only the wanted fields survive", () => {
   const result = parseCombined(20, [PAGE_ONE], 1);
   assert.deepStrictEqual(result.items[0], {
+    id: "10000000001",
     repoName: "widgets",
     repoUrl: "https://github.com/acme/widgets",
     title: "Implement proxy for remote assets",
@@ -335,6 +452,7 @@ test("only the five wanted fields survive", () => {
     updatedAt: "2026-01-05T09:00:00Z",
   });
   assert.deepStrictEqual(Object.keys(result.items[0]).sort(), [
+    "id",
     "repoName",
     "repoUrl",
     "subjectUrl",

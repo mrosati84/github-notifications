@@ -44,7 +44,8 @@ so you can follow one link, then the other, without reopening the list.
 
 At the bottom of the panel, **Mark all read** marks every unread notification
 read with a single `gh api --method PUT notifications` call and then refreshes
-the list. There is no keyboard shortcut for it.
+the list. There is no keyboard shortcut for it; `x` acts on the highlighted
+notification alone.
 
 ### With the keyboard
 
@@ -53,8 +54,16 @@ the list. There is no keyboard shortcut for it.
 | `↑` `↓` or `j` `k`    | Move the row cursor.                      |
 | `Enter` or `Space`    | Open the subject of the highlighted row.  |
 | `o`                   | Open the repository of the highlighted row. |
+| `x`                   | Mark the highlighted row done.            |
 | `r`                   | Refresh now.                              |
 | `Esc`                 | Close the panel.                          |
+
+`x` marks one notification **done** — the same thing as dismissing it on
+github.com/notifications — with a `DELETE notifications/threads/<id>` call, then
+reloads the page you are on, so the row is gone and the next one moves up under
+the cursor. Press it again to clear the next one. It acts on the row that is
+highlighted, so with an empty list — or on a page you have just switched to,
+where the cursor is dropped — it does nothing.
 
 Hovering a row moves the same cursor, so the mouse and the keyboard always point
 at one highlighted row.
@@ -143,7 +152,12 @@ inbox of any size costs the same two reads. Only one fetch per instance is ever
 in flight; an overlapping check is skipped. `gh` is reached through `bash -lc`,
 so the login-shell `PATH` applies. The panel's **Mark all read** button makes
 one `gh api --method PUT notifications` call to mark every unread notification
-read, then refreshes the list; it has no key binding.
+read, then refreshes the list; it has no key binding. `x` is the per-row action:
+it sends one `DELETE notifications/threads/<id>` (GitHub's "mark a thread as
+done") and then reloads the page in view. It comes from the shell kit's
+`PanelKeyCatcher`, which turns `x`/`X` into `deleteRequested` before any
+`textKey` handler sees it, so it is hardcoded on purpose and appears in no
+setting.
 
 IPC commands:
 

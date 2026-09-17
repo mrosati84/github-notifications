@@ -4,10 +4,11 @@
 //   - BarWidget.qml / Panel.qml import it as a QML JS module;
 //   - test-model.js requires it from Node (module.exports guard at the bottom).
 //
-// The widget is about exactly five fields of `gh api notifications`:
+// The widget is about exactly five display fields of `gh api notifications`:
 //     repository.name, repository.html_url, subject.title, subject.url,
 //     updated_at
-// Everything here turns gh's output into those five fields, turns gh's failures
+// plus the thread `id`, which is what marks a single notification done.
+// Everything here turns gh's output into those fields, turns gh's failures
 // into one sentence worth reading, and builds every display string the bar icon
 // and the panel show. No QML, no timers, no I/O - which is what lets node run
 // this file directly.
@@ -37,6 +38,9 @@ var MAX_NAME_CHARS = 200;
 var MAX_TITLE_CHARS = 300;
 var MAX_URL_CHARS = 512;
 var MAX_UPDATED_CHARS = 40;
+// A notification thread id is a bare digit run; the cap is what keeps a
+// pathological one out of the shell string markDoneCommand() builds.
+var MAX_ID_CHARS = 20;
 
 // The count probe prints this sentinel on its own line; the loader splits the
 // combined stdout on it to separate the probe response from the page response.
@@ -115,12 +119,51 @@ function markAllReadArgv() {
   return ["bash", "-lc", markAllReadCommand()];
 }
 
-// The PUT prints nothing on success. A non-zero exit carries gh's own error on
-// stderr (occasionally stdout), classified by the same failureText() the fetch
-// uses, so the panel says the same actionable sentence either way.
-function parseMarkAllRead(exitCode, stdout, stderr) {
+// A mark request - the mark-all-read PUT, or the per-thread DELETE below -
+// prints nothing on success. A non-zero exit carries gh's own error on stderr
+// (occasionally stdout), classified by the same failureText() the fetch uses,
+// so the panel says the same actionable sentence either way.
+function parseMarkResult(exitCode, stdout, stderr) {
   if (exitCode === 0) return { ok: true, error: "" };
   return { ok: false, error: failureText(exitCode, text(stderr) + "\n" + text(stdout)) };
+}
+
+function parseMarkAllRead(exitCode, stdout, stderr) {
+  return parseMarkResult(exitCode, stdout, stderr);
+}
+
+// ---------------------------------------------------------------------------
+// mark one notification done
+
+// Every thread gh returns carries an integer `id`, and the id is the only value
+// from gh that ever reaches a shell string. Nothing but a bare digit run is
+// accepted; anything else returns "" and the caller sends no request at all,
+// so a hostile or malformed response can never be interpolated into a command.
+function notificationId(value) {
+  var s = text(value);
+  if (s === "" || s.length > MAX_ID_CHARS) return "";
+  return /^[0-9]+$/.test(s) ? s : "";
+}
+
+// GitHub's "mark a thread as done" endpoint is
+// `DELETE /notifications/threads/{thread_id}`: the notification leaves the
+// inbox, exactly as if it had been dismissed on github.com/notifications.
+// Unlike the PUT it takes the thread's own id in the path and nothing else.
+function markDoneCommand(id) {
+  var threadId = notificationId(id);
+  if (threadId === "") return "";
+  return "gh api --method DELETE notifications/threads/" + threadId;
+}
+
+// An empty argv is the caller's signal that there is nothing to send; it is
+// never a process to start.
+function markDoneArgv(id) {
+  var command = markDoneCommand(id);
+  return command === "" ? [] : ["bash", "-lc", command];
+}
+
+function parseMarkDone(exitCode, stdout, stderr) {
+  return parseMarkResult(exitCode, stdout, stderr);
 }
 
 // ---------------------------------------------------------------------------
@@ -242,15 +285,18 @@ function truncateChars(value, max) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
-// Only the five fields the widget is about. An entry with no repository, no
-// title and no url is nothing anyone can read or click, so it is dropped rather
-// than rendered as an empty row. Retained strings are capped; `updated_at` is
-// kept as a raw ISO-8601 string and formatted at display time.
+// Only the fields the widget is about: the five it displays plus the thread id
+// that marks one notification done. An entry with no repository, no title and
+// no url is nothing anyone can read or click, so it is dropped rather than
+// rendered as an empty row. Retained strings are capped; `updated_at` is kept as
+// a raw ISO-8601 string and formatted at display time; `id` is "" when the API
+// did not send a usable one, which is what makes `x` a no-op for that row.
 function normalizeItem(raw) {
   if (!raw || typeof raw !== "object") return null;
   var repository = raw.repository || {};
   var subject = raw.subject || {};
   var item = {
+    id: notificationId(raw.id),
     repoName: truncateChars(repository.name, MAX_NAME_CHARS),
     repoUrl: truncateChars(repository.html_url, MAX_URL_CHARS),
     title: truncateChars(subject.title, MAX_TITLE_CHARS),
@@ -811,6 +857,7 @@ if (typeof module !== "undefined") {
     MAX_TITLE_CHARS: MAX_TITLE_CHARS,
     MAX_URL_CHARS: MAX_URL_CHARS,
     MAX_UPDATED_CHARS: MAX_UPDATED_CHARS,
+    MAX_ID_CHARS: MAX_ID_CHARS,
     COUNT_MARKER_TEXT: COUNT_MARKER_TEXT,
     COUNT_MARKER: COUNT_MARKER,
     ghCommand: ghCommand,
@@ -819,6 +866,10 @@ if (typeof module !== "undefined") {
     markAllReadCommand: markAllReadCommand,
     markAllReadArgv: markAllReadArgv,
     parseMarkAllRead: parseMarkAllRead,
+    notificationId: notificationId,
+    markDoneCommand: markDoneCommand,
+    markDoneArgv: markDoneArgv,
+    parseMarkDone: parseMarkDone,
     isArray: isArray,
     text: text,
     clampIntervalSeconds: clampIntervalSeconds,

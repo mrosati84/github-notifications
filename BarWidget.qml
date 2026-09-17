@@ -38,12 +38,16 @@ BarWidget {
     // own onExited knows not to overwrite the timeout message with a generic
     // parse/exit error. Cleared when the next fetch starts.
     property bool stalled: false
-    // True from the moment "Mark all read" is clicked until the follow-up
-    // refresh that empties the list has settled, so the button stays disabled
-    // and spinning and a second click is impossible.
-    property bool markingRead: false
-    // Set when the PUT succeeds: the next settled fetch is the dismissing
-    // refresh, and it is what clears `markingRead`.
+    // The mark request in flight: "" when idle, "all" for the mark-all-read PUT
+    // and "done" for a single notification dismissed with `x`. Both kinds share
+    // one process and one at-a-time rule.
+    property string markAction: ""
+    // True while either mark request is running, so the "Mark all read" button
+    // stays disabled and the refresh mark keeps spinning for both, and neither
+    // action can be started while the other is in flight.
+    readonly property bool marking: root.markAction !== ""
+    // Set when a mark request succeeds: the next settled fetch is the follow-up
+    // refresh, and it is what clears `markAction`.
     property bool clearPending: false
 
     // The panel reads this to grey out pagination while a fetch is in flight.
@@ -83,13 +87,30 @@ BarWidget {
 
     // Mark every unread notification read with one `gh api --method PUT
     // notifications` call, then refresh so the emptied list is what the panel
-    // shows. One PUT at a time: a click while `markingRead` is set (or while the
-    // process is somehow still running) is ignored.
+    // shows. One mark request at a time: a click while `marking` is set (or
+    // while the process is somehow still running) is ignored.
     function markAllRead() {
-        if (markProc.running || root.markingRead)
+        if (markProc.running || root.marking)
             return;
-        root.markingRead = true;
+        root.markAction = "all";
         markProc.command = Model.markAllReadArgv();
+        markProc.running = true;
+    }
+
+    // Mark one notification done with GitHub's per-thread endpoint,
+    // `DELETE notifications/threads/<id>` - the API's equivalent of dismissing
+    // it on github.com/notifications. The follow-up fetch reloads the page in
+    // view rather than jumping to page 1, so the list shifts up under the
+    // cursor and `x` pressed again takes the next row. An item with no usable
+    // id - nothing selected, or an id the API did not send - sends no request.
+    function markDone(item) {
+        if (markProc.running || root.marking)
+            return;
+        var argv = Model.markDoneArgv(item ? item.id : "");
+        if (argv.length === 0)
+            return;
+        root.markAction = "done";
+        markProc.command = argv;
         markProc.running = true;
     }
 
@@ -161,23 +182,25 @@ BarWidget {
                 });
             }
 
-            // Mark all read: this settle is the dismissing refresh only once no
+            // A mark request: this settle is the follow-up refresh only once no
             // further fetch was queued, so a chained fetch keeps the button
-            // disabled and spinning until the list actually empties.
+            // disabled and spinning until the list has actually caught up.
             if (!more && root.clearPending) {
-                root.markingRead = false;
+                root.markAction = "";
                 root.clearPending = false;
             }
         }
     }
 
-    // The dedicated mark-all-read process. It is separate from `proc` so the
-    // PUT cannot be mistaken for a page fetch and cannot be clobbered by one;
-    // it reuses the same bash -lc login-shell PATH and the same collector shape.
+    // The dedicated mark process: the mark-all-read PUT, or the per-thread
+    // DELETE that `x` sends. It is separate from `proc` so a mark request cannot
+    // be mistaken for a page fetch and cannot be clobbered by one; it reuses the
+    // same bash -lc login-shell PATH and the same collector shape. Which one is
+    // running is `markAction`, and it is what onExited branches on.
     Process {
         id: markProc
-        // No `command:` binding: markAllRead() assigns the argv immediately
-        // before it sets `running`, so the PUT cannot race the run.
+        // No `command:` binding: markAllRead() / markDone() assign the argv
+        // immediately before they set `running`, so a request cannot race the run.
         stdout: StdioCollector {
             id: markStdout
             waitForEnd: true
@@ -187,16 +210,27 @@ BarWidget {
             waitForEnd: true
         }
         onExited: function (exitCode) {
-            var result = Model.parseMarkAllRead(exitCode, markStdout.text, markStderr.text);
+            var action = root.markAction;
+            var result = action === "done"
+                ? Model.parseMarkDone(exitCode, markStdout.text, markStderr.text)
+                : Model.parseMarkAllRead(exitCode, markStdout.text, markStderr.text);
             if (!result.ok) {
-                root.markingRead = false;
-                console.warn("GitHub Notifications: mark all read failed - " + result.error);
+                root.markAction = "";
+                console.warn("GitHub Notifications: " +
+                    (action === "done" ? "marking a notification done" : "mark all read") +
+                    " failed - " + result.error);
                 return;
             }
-            // Keep `markingRead` set and let the follow-up refresh clear it once
-            // it has settled, so the button cannot be clicked again mid-dismiss.
+            // Keep `markAction` set and let the follow-up fetch clear it once it
+            // has settled, so neither action can be started again mid-dismiss.
             root.clearPending = true;
-            root.refresh();
+            // Mark all read empties the inbox, so it returns to page 1. One
+            // done only shortens the list: reload the page already in view, so
+            // the user stays where they were.
+            if (action === "done")
+                root.loadPage(root.view.page || 1);
+            else
+                root.refresh();
         }
     }
 
