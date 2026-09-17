@@ -199,6 +199,37 @@ test("a bad page request in the command falls back to page 1", () => {
 });
 
 // --------------------------------------------------------------------------
+// mark all read (command + classifier only: never a live PUT, it would mutate
+// the user's real GitHub inbox)
+
+test("the mark-all-read command is exactly one PUT /notifications", () => {
+  assert.strictEqual(M.markAllReadCommand(), "gh api --method PUT notifications");
+  assert.deepStrictEqual(M.markAllReadArgv(), [
+    "bash",
+    "-lc",
+    "gh api --method PUT notifications",
+  ]);
+  assert.ok(M.markAllReadCommand().indexOf("--method PUT") !== -1);
+  assert.ok(M.markAllReadCommand().indexOf("notifications") !== -1);
+  // No `last_read_at` and no pagination: one request marks every unread item.
+  assert.strictEqual(M.markAllReadCommand().indexOf("last_read_at"), -1);
+  assert.ok(!/--paginate|--slurp/.test(M.markAllReadCommand()));
+});
+
+test("parseMarkAllRead classifies success and failure", () => {
+  assert.deepStrictEqual(M.parseMarkAllRead(0, "", ""), { ok: true, error: "" });
+
+  const failed = M.parseMarkAllRead(1, "", "gh: HTTP 401: Bad credentials");
+  assert.strictEqual(failed.ok, false);
+  assert.match(failed.error, /not authenticated/);
+
+  // gh sometimes writes the failure to stdout; both streams are classified.
+  const stdoutOnly = M.parseMarkAllRead(1, "gh: HTTP 401: Bad credentials", "");
+  assert.strictEqual(stdoutOnly.ok, false);
+  assert.match(stdoutOnly.error, /not authenticated/);
+});
+
+// --------------------------------------------------------------------------
 // probe / count / page parsing
 
 test("splitHeadersBody and parseLinkPages read gh's --include shape", () => {

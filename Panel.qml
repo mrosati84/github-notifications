@@ -63,6 +63,10 @@ Panel {
         if (hostWidget && typeof hostWidget.refreshNow === "function")
             hostWidget.refreshNow();
     }
+    function markAllRead() {
+        if (hostWidget && typeof hostWidget.markAllRead === "function")
+            hostWidget.markAllRead();
+    }
 
     // Pagination forwards to the widget, which owns the fetch. It is refused
     // while the widget is busy so a click cannot start a second request; the
@@ -412,11 +416,26 @@ Panel {
                             elide: Text.ElideRight
                         }
 
+                        // The kit's text button, not a focusable control: it
+                        // defaults to `focusable: false`, so Return/Enter/Space
+                        // keep going to the row cursor, never here.
+                        Button {
+                            Layout.alignment: Qt.AlignVCenter
+                            visible: root.rowCount > 0
+                            enabled: root.hostWidget !== null && root.hostWidget.markingRead !== true
+                            text: "Mark all read"
+                            foreground: root.foreground
+                            tooltipText: "Mark all read"
+                            onClicked: root.markAllRead()
+                        }
+
                         PanelActionButton {
                             id: refreshButton
                             Layout.alignment: Qt.AlignVCenter
-                            // Spins while a fetch is in flight and snaps back to rest
-                            // the moment it settles.
+                            // Spins while a fetch is in flight or while a
+                            // mark-all-read (and its dismissing refresh) is
+                            // running, and snaps back to rest the moment it
+                            // settles.
                             transformOrigin: Item.Center
                             iconText: "\uf021"
                             tooltipText: "Refresh now"
@@ -424,7 +443,7 @@ Panel {
                             onClicked: root.refreshNow()
 
                             RotationAnimator on rotation {
-                                running: root.hostWidget !== null && root.hostWidget.busy === true
+                                running: root.hostWidget !== null && (root.hostWidget.busy === true || root.hostWidget.markingRead === true)
                                 from: 0
                                 to: 360
                                 duration: 900

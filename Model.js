@@ -102,6 +102,28 @@ function countMarker() {
 }
 
 // ---------------------------------------------------------------------------
+// mark every unread notification read
+
+// GitHub's "mark all as read" endpoint is `PUT /notifications`: one request
+// marks every unread notification in the inbox read. It takes no body and no
+// parameters - no `last_read_at`, no pagination.
+function markAllReadCommand() {
+  return "gh api --method PUT notifications";
+}
+
+function markAllReadArgv() {
+  return ["bash", "-lc", markAllReadCommand()];
+}
+
+// The PUT prints nothing on success. A non-zero exit carries gh's own error on
+// stderr (occasionally stdout), classified by the same failureText() the fetch
+// uses, so the panel says the same actionable sentence either way.
+function parseMarkAllRead(exitCode, stdout, stderr) {
+  if (exitCode === 0) return { ok: true, error: "" };
+  return { ok: false, error: failureText(exitCode, text(stderr) + "\n" + text(stdout)) };
+}
+
+// ---------------------------------------------------------------------------
 // bounded parsing helpers
 
 // UTF-8 byte length without Buffer, so this runs in Qt's JS engine too.
@@ -794,6 +816,9 @@ if (typeof module !== "undefined") {
     ghCommand: ghCommand,
     ghArgv: ghArgv,
     countMarker: countMarker,
+    markAllReadCommand: markAllReadCommand,
+    markAllReadArgv: markAllReadArgv,
+    parseMarkAllRead: parseMarkAllRead,
     isArray: isArray,
     text: text,
     clampIntervalSeconds: clampIntervalSeconds,

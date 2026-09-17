@@ -38,6 +38,13 @@ BarWidget {
     // own onExited knows not to overwrite the timeout message with a generic
     // parse/exit error. Cleared when the next fetch starts.
     property bool stalled: false
+    // True from the moment "Mark all read" is clicked until the follow-up
+    // refresh that empties the list has settled, so the button stays disabled
+    // and spinning and a second click is impossible.
+    property bool markingRead: false
+    // Set when the PUT succeeds: the next settled fetch is the dismissing
+    // refresh, and it is what clears `markingRead`.
+    property bool clearPending: false
 
     // The panel reads this to grey out pagination while a fetch is in flight.
     readonly property bool busy: proc.running
@@ -72,6 +79,18 @@ BarWidget {
     // instead of only the one that owns the IPC target.
     function refreshNow() {
         root.refresh();
+    }
+
+    // Mark every unread notification read with one `gh api --method PUT
+    // notifications` call, then refresh so the emptied list is what the panel
+    // shows. One PUT at a time: a click while `markingRead` is set (or while the
+    // process is somehow still running) is ignored.
+    function markAllRead() {
+        if (markProc.running || root.markingRead)
+            return;
+        root.markingRead = true;
+        markProc.command = Model.markAllReadArgv();
+        markProc.running = true;
     }
 
     function goToPage(k) {
@@ -126,18 +145,58 @@ BarWidget {
             // click was queued while this fetch ran, take it up now. Both go
             // through Qt.callLater, and loadPage() refuses to start while a
             // process is running, so a queued navigation can never race a fetch.
+            var more = false;
             if (result.ok && result.page !== root.requestedPage) {
+                more = true;
                 var clamped = result.page;
                 Qt.callLater(function () {
                     root.loadPage(clamped);
                 });
             } else if (root.pendingPage > 0) {
+                more = true;
                 var pending = root.pendingPage;
                 root.pendingPage = 0;
                 Qt.callLater(function () {
                     root.loadPage(pending);
                 });
             }
+
+            // Mark all read: this settle is the dismissing refresh only once no
+            // further fetch was queued, so a chained fetch keeps the button
+            // disabled and spinning until the list actually empties.
+            if (!more && root.clearPending) {
+                root.markingRead = false;
+                root.clearPending = false;
+            }
+        }
+    }
+
+    // The dedicated mark-all-read process. It is separate from `proc` so the
+    // PUT cannot be mistaken for a page fetch and cannot be clobbered by one;
+    // it reuses the same bash -lc login-shell PATH and the same collector shape.
+    Process {
+        id: markProc
+        // No `command:` binding: markAllRead() assigns the argv immediately
+        // before it sets `running`, so the PUT cannot race the run.
+        stdout: StdioCollector {
+            id: markStdout
+            waitForEnd: true
+        }
+        stderr: StdioCollector {
+            id: markStderr
+            waitForEnd: true
+        }
+        onExited: function (exitCode) {
+            var result = Model.parseMarkAllRead(exitCode, markStdout.text, markStderr.text);
+            if (!result.ok) {
+                root.markingRead = false;
+                console.warn("GitHub Notifications: mark all read failed - " + result.error);
+                return;
+            }
+            // Keep `markingRead` set and let the follow-up refresh clear it once
+            // it has settled, so the button cannot be clicked again mid-dismiss.
+            root.clearPending = true;
+            root.refresh();
         }
     }
 

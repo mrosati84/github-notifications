@@ -42,6 +42,10 @@ Each row has two separate links: the repository name and the subject title.
 Click either one and it opens in your browser. The panel stays open on purpose,
 so you can follow one link, then the other, without reopening the list.
 
+At the bottom of the panel, **Mark all read** marks every unread notification
+read with a single `gh api --method PUT notifications` call and then refreshes
+the list. There is no keyboard shortcut for it.
+
 ### With the keyboard
 
 | Key                   | What it does                              |
@@ -137,7 +141,9 @@ Each fetch is deliberately bounded — one page of 5 notifications plus a one-it
 `--include` probe for the exact unread total, both capped with `head -c` — so an
 inbox of any size costs the same two reads. Only one fetch per instance is ever
 in flight; an overlapping check is skipped. `gh` is reached through `bash -lc`,
-so the login-shell `PATH` applies. Nothing is ever marked read.
+so the login-shell `PATH` applies. The panel's **Mark all read** button makes
+one `gh api --method PUT notifications` call to mark every unread notification
+read, then refreshes the list; it has no key binding.
 
 IPC commands:
 
