@@ -202,18 +202,47 @@ test("a bad page request in the command falls back to page 1", () => {
 // mark all read (command + classifier only: never a live PUT, it would mutate
 // the user's real GitHub inbox)
 
-test("the mark-all-read command is exactly one PUT /notifications", () => {
-  assert.strictEqual(M.markAllReadCommand(), "gh api --method PUT notifications");
-  assert.deepStrictEqual(M.markAllReadArgv(), [
-    "bash",
-    "-lc",
-    "gh api --method PUT notifications",
-  ]);
-  assert.ok(M.markAllReadCommand().indexOf("--method PUT") !== -1);
-  assert.ok(M.markAllReadCommand().indexOf("notifications") !== -1);
+test("the mark-all-read command is one bounded PUT /notifications", () => {
+  const cmd = M.markAllReadCommand();
+  // One gh invocation under the shared capStreams() wrapper, not a bare call.
+  assert.strictEqual((cmd.match(/gh api/g) || []).length, 1, cmd);
+  assert.ok(cmd.indexOf("gh api --method PUT notifications") !== -1, cmd);
+  assert.deepStrictEqual(M.markAllReadArgv().slice(0, 2), ["bash", "-lc"]);
+  assert.ok(
+    M.markAllReadArgv()[2].indexOf("gh api --method PUT notifications") !== -1,
+  );
   // No `last_read_at` and no pagination: one request marks every unread item.
-  assert.strictEqual(M.markAllReadCommand().indexOf("last_read_at"), -1);
-  assert.ok(!/--paginate|--slurp/.test(M.markAllReadCommand()));
+  assert.strictEqual(cmd.indexOf("last_read_at"), -1);
+  assert.ok(!/--paginate|--slurp/.test(cmd));
+});
+
+test("both mark commands cap stdout and stderr like the fetch", () => {
+  for (const cmd of [M.markAllReadCommand(), M.markDoneCommand("7")]) {
+    assert.strictEqual((cmd.match(/head -c/g) || []).length, 2, cmd);
+    assert.ok(cmd.indexOf("head -c 8192") !== -1, cmd);
+    assert.ok(cmd.indexOf("head -c 262145") !== -1, cmd);
+    assert.ok(cmd.indexOf("set -o pipefail") !== -1, cmd);
+    assert.ok(!/--paginate|--slurp/.test(cmd), cmd);
+  }
+  assert.deepStrictEqual(M.markAllReadArgv().slice(0, 2), ["bash", "-lc"]);
+  assert.deepStrictEqual(M.markDoneArgv("7").slice(0, 2), ["bash", "-lc"]);
+});
+
+test("an oversized mark response is rejected before classification", () => {
+  const huge = "x".repeat(M.MAX_STDOUT_BYTES + 1);
+  // Checked first, like parseNotifications: even exit 0 with oversized output
+  // is a failure, and the failure says why.
+  assert.deepStrictEqual(M.parseMarkAllRead(0, huge, ""), {
+    ok: false,
+    error: "GitHub returned more data than the widget will load.",
+  });
+  assert.strictEqual(M.parseMarkDone(1, huge, "err").ok, false);
+  assert.match(M.parseMarkDone(1, huge, "err").error, /more data/);
+  // One byte at the cap is still accepted for classification.
+  assert.deepStrictEqual(M.parseMarkAllRead(0, "x".repeat(M.MAX_STDOUT_BYTES), ""), {
+    ok: true,
+    error: "",
+  });
 });
 
 test("parseMarkAllRead classifies success and failure", () => {
@@ -234,21 +263,25 @@ test("parseMarkAllRead classifies success and failure", () => {
 // it would dismiss a real thread in the user's GitHub inbox)
 
 test("the mark-done command is exactly one DELETE of that thread", () => {
-  assert.strictEqual(
-    M.markDoneCommand("10000000001"),
-    "gh api --method DELETE notifications/threads/10000000001",
+  const cmd = M.markDoneCommand("10000000001");
+  assert.strictEqual((cmd.match(/gh api/g) || []).length, 1, cmd);
+  assert.ok(
+    cmd.indexOf("gh api --method DELETE notifications/threads/10000000001") !== -1,
+    cmd,
   );
-  assert.deepStrictEqual(M.markDoneArgv("10000000001"), [
-    "bash",
-    "-lc",
-    "gh api --method DELETE notifications/threads/10000000001",
-  ]);
+  assert.deepStrictEqual(M.markDoneArgv("10000000001").slice(0, 2), ["bash", "-lc"]);
+  assert.ok(
+    M.markDoneArgv("10000000001")[2].indexOf(
+      "gh api --method DELETE notifications/threads/10000000001",
+    ) !== -1,
+  );
   assert.ok(M.markDoneCommand("7").indexOf("--method DELETE") !== -1);
   assert.ok(M.markDoneCommand("7").indexOf("notifications/threads/7") !== -1);
   // gh sends `id` as a JSON string, but a bare number is accepted the same way.
-  assert.strictEqual(
-    M.markDoneCommand(10000000001),
-    "gh api --method DELETE notifications/threads/10000000001",
+  assert.ok(
+    M.markDoneCommand(10000000001).indexOf(
+      "gh api --method DELETE notifications/threads/10000000001",
+    ) !== -1,
   );
   // The endpoint takes the thread id in the path and nothing else: no body, no
   // last_read_at, no pagination.
@@ -288,9 +321,10 @@ test("an id that is not a bare digit run never reaches the shell", () => {
   // The cap is what bounds the shell string, and the longest legal id fits.
   assert.strictEqual(M.MAX_ID_CHARS, 20);
   const longest = "9".repeat(M.MAX_ID_CHARS);
-  assert.strictEqual(
-    M.markDoneCommand(longest),
-    "gh api --method DELETE notifications/threads/" + longest,
+  assert.ok(
+    M.markDoneCommand(longest).indexOf(
+      "gh api --method DELETE notifications/threads/" + longest,
+    ) !== -1,
   );
 });
 
@@ -308,9 +342,10 @@ test("a page's ids survive the parse, and a hostile one is neutralised", () => {
   const result = parseCombined(20, [PAGE_ONE[0], PAGE_TWO[0]], 1);
   assert.strictEqual(result.items[0].id, "10000000001");
   assert.strictEqual(result.items[1].id, "3");
-  assert.strictEqual(
-    M.markDoneCommand(result.items[0].id),
-    "gh api --method DELETE notifications/threads/10000000001",
+  assert.ok(
+    M.markDoneCommand(result.items[0].id).indexOf(
+      "gh api --method DELETE notifications/threads/10000000001",
+    ) !== -1,
   );
 
   const hostile = parseCombined(20, [{ ...PAGE_ONE[0], id: "1; rm -rf /" }], 1);

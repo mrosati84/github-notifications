@@ -38,6 +38,12 @@ BarWidget {
     // own onExited knows not to overwrite the timeout message with a generic
     // parse/exit error. Cleared when the next fetch starts.
     property bool stalled: false
+    // The same flag for the mark process: set by markStallTimer when it cuts a
+    // hung mark request loose, so markProc's own onExited reports the timeout
+    // instead of a generic parse/exit error and still clears `markAction`, so
+    // the panel's button and spinner can never stay busy. Cleared when the
+    // next mark request starts.
+    property bool markStalled: false
     // The mark request in flight: "" when idle, "all" for the mark-all-read PUT
     // and "done" for a single notification dismissed with `x`. Both kinds share
     // one process and one at-a-time rule.
@@ -209,7 +215,20 @@ BarWidget {
             id: markStderr
             waitForEnd: true
         }
+        onRunningChanged: if (running) {
+            root.markStalled = false;
+            markStallTimer.restart();
+        }
         onExited: function (exitCode) {
+            markStallTimer.stop();
+            // The mark stall timer already wrote the timeout message and is
+            // about to receive this exit from the process it killed; keep that
+            // message, and clear the mark state so the panel is not stuck busy.
+            if (root.markStalled) {
+                root.markStalled = false;
+                root.markAction = "";
+                return;
+            }
             var action = root.markAction;
             var result = action === "done"
                 ? Model.parseMarkDone(exitCode, markStdout.text, markStderr.text)
@@ -251,6 +270,22 @@ BarWidget {
                 items: [],
                 error: "gh did not answer within a minute."
             }, Date.now());
+        }
+    }
+
+    // The same deadline for the mark process: a PUT or DELETE that never
+    // returns would leave `markAction` set, so the "Mark all read" button would
+    // stay disabled and the refresh mark would spin until the shell restarts.
+    // Cut it loose and say so; markProc's onExited does the rest of the cleanup.
+    Timer {
+        id: markStallTimer
+        interval: 60000
+        onTriggered: {
+            if (!markProc.running)
+                return;
+            root.markStalled = true;
+            markProc.running = false;
+            console.warn("GitHub Notifications: mark request did not answer within a minute");
         }
     }
 

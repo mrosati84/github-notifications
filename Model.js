@@ -72,28 +72,42 @@ function clampIntervalSeconds(value) {
 // ---------------------------------------------------------------------------
 // the bounded gh command
 
-// One shell string, built only from constants: a one-item `--include` probe
-// (its Link `rel="last"` is the total unread count) followed by exactly one
-// page of PAGE_SIZE notifications. Both streams are capped with `head -c`, so
-// a runaway response can never be buffered whole. No unbounded-follow flags
-// are used: only this one bounded probe-plus-page fetch.
-function ghCommand(page) {
-  var requested = Math.floor(Number(page));
-  if (!isFinite(requested) || requested < 1) requested = 1;
+// Every gh pipeline this widget runs is wrapped the same way, so the byte caps
+// are enforced in the shell itself, upstream of QML's StdioCollector: stderr
+// through `head -c MAX_STDERR_BYTES`, stdout through `head -c
+// MAX_STDOUT_BYTES + 1`. The +1 makes truncation visible - the collector can
+// never receive more than that, and one byte over the cap is what
+// parseNotifications/parseMarkResult reject as oversized. `set -o pipefail`
+// makes a cap cut gh itself a non-zero exit, so truncated output is a failure,
+// never a success.
+function capStreams(inner) {
   return (
-    "set -o pipefail; { gh api \"notifications?per_page=1&page=1\" --include && " +
-    "printf \"\\n" +
-    COUNT_MARKER_TEXT +
-    "\\n\" && " +
-    "gh api \"notifications?per_page=" +
-    PAGE_SIZE +
-    "&page=" +
-    requested +
-    "\"; } " +
-    "2> >(head -c " +
+    "set -o pipefail; { " +
+    inner +
+    "; } 2> >(head -c " +
     MAX_STDERR_BYTES +
     " >&2) | head -c " +
     (MAX_STDOUT_BYTES + 1)
+  );
+}
+
+// One shell string, built only from constants: a one-item `--include` probe
+// (its Link `rel="last"` is the total unread count) followed by exactly one
+// page of PAGE_SIZE notifications, both under capStreams(). No unbounded-follow
+// flags are used: only this one bounded probe-plus-page fetch.
+function ghCommand(page) {
+  var requested = Math.floor(Number(page));
+  if (!isFinite(requested) || requested < 1) requested = 1;
+  return capStreams(
+    "gh api \"notifications?per_page=1&page=1\" --include && " +
+      "printf \"\\n" +
+      COUNT_MARKER_TEXT +
+      "\\n\" && " +
+      "gh api \"notifications?per_page=" +
+      PAGE_SIZE +
+      "&page=" +
+      requested +
+      "\""
   );
 }
 
@@ -110,9 +124,11 @@ function countMarker() {
 
 // GitHub's "mark all as read" endpoint is `PUT /notifications`: one request
 // marks every unread notification in the inbox read. It takes no body and no
-// parameters - no `last_read_at`, no pagination.
+// parameters - no `last_read_at`, no pagination. Like the fetch, it runs under
+// capStreams(), so a stalled or runaway response is cut off before QML ever
+// sees it.
 function markAllReadCommand() {
-  return "gh api --method PUT notifications";
+  return capStreams("gh api --method PUT notifications");
 }
 
 function markAllReadArgv() {
@@ -120,12 +136,18 @@ function markAllReadArgv() {
 }
 
 // A mark request - the mark-all-read PUT, or the per-thread DELETE below -
-// prints nothing on success. A non-zero exit carries gh's own error on stderr
-// (occasionally stdout), classified by the same failureText() the fetch uses,
-// so the panel says the same actionable sentence either way.
+// prints nothing on success. Anything oversized is rejected before
+// classification, exactly as parseNotifications does, so a pathological
+// response or error body never reaches failureText(). A non-zero exit carries
+// gh's own error on stderr (occasionally stdout), classified by the same
+// failureText() the fetch uses, so the panel says the same actionable
+// sentence either way.
 function parseMarkResult(exitCode, stdout, stderr) {
+  var out = text(stdout);
+  if (utf8Length(out) > MAX_STDOUT_BYTES)
+    return { ok: false, error: "GitHub returned more data than the widget will load." };
   if (exitCode === 0) return { ok: true, error: "" };
-  return { ok: false, error: failureText(exitCode, text(stderr) + "\n" + text(stdout)) };
+  return { ok: false, error: failureText(exitCode, text(stderr) + "\n" + out) };
 }
 
 function parseMarkAllRead(exitCode, stdout, stderr) {
@@ -148,11 +170,12 @@ function notificationId(value) {
 // GitHub's "mark a thread as done" endpoint is
 // `DELETE /notifications/threads/{thread_id}`: the notification leaves the
 // inbox, exactly as if it had been dismissed on github.com/notifications.
-// Unlike the PUT it takes the thread's own id in the path and nothing else.
+// Unlike the PUT it takes the thread's own id in the path and nothing else,
+// and it runs under the same capStreams() wrapper as the fetch and the PUT.
 function markDoneCommand(id) {
   var threadId = notificationId(id);
   if (threadId === "") return "";
-  return "gh api --method DELETE notifications/threads/" + threadId;
+  return capStreams("gh api --method DELETE notifications/threads/" + threadId);
 }
 
 // An empty argv is the caller's signal that there is nothing to send; it is
