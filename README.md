@@ -39,8 +39,8 @@ Click the GitHub mark in the bar to open the notification list.
 | Right click  | Open github.com/notifications in your browser. |
 
 Each row has two separate links: the repository name and the subject title.
-Click either one and it opens in your browser. The panel stays open on purpose,
-so you can follow one link, then the other, without reopening the list.
+Click either one and it opens in your browser, and the panel closes. To follow
+the other link, click the GitHub mark in the bar to open the list again.
 
 At the bottom of the panel, **Mark all read** marks every unread notification
 read with a single `gh api --method PUT notifications` call and then refreshes
@@ -49,14 +49,14 @@ notification alone.
 
 ### With the keyboard
 
-| Key                   | What it does                              |
-| --------------------- | ----------------------------------------- |
-| `↑` `↓` or `j` `k`    | Move the row cursor.                      |
-| `Enter` or `Space`    | Open the subject of the highlighted row.  |
-| `o`                   | Open the repository of the highlighted row. |
-| `x`                   | Mark the highlighted row done.            |
-| `r`                   | Refresh now.                              |
-| `Esc`                 | Close the panel.                          |
+| Key                   | What it does                                                  |
+| --------------------- | ------------------------------------------------------------- |
+| `↑` `↓` or `j` `k`    | Move the row cursor.                                          |
+| `Enter` or `Space`    | Open the subject of the highlighted row; the panel closes.    |
+| `o`                   | Open the repository of the highlighted row; the panel closes. |
+| `x`                   | Mark the highlighted row done.                                |
+| `r`                   | Refresh now.                                                  |
+| `Esc`                 | Close the panel.                                              |
 
 `x` marks one notification **done** — the same thing as dismissing it on
 github.com/notifications — with a `DELETE notifications/threads/<id>` call, then
