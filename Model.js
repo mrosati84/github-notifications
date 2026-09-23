@@ -567,6 +567,20 @@ function cursorForRows(rowCount) {
   return { active: isFinite(count) && count > 0, index: 0 };
 }
 
+// The row cursor after the list changes under it. A same-page refresh can drop
+// rows out from under a live cursor (`x` reloads the page in view, a timer tick
+// re-reads it), and the cursor must never be left pointing past the last row:
+// the highlighted row and the row an action targets have to stay the same one.
+function reconcileCursor(focusIndex, rowCount, cursorActive) {
+  var count = Math.floor(Number(rowCount));
+  if (!isFinite(count) || count <= 0 || !cursorActive)
+    return { active: false, index: 0 };
+  var index = Math.floor(Number(focusIndex));
+  if (!isFinite(index))
+    index = 0;
+  return { active: true, index: Math.min(Math.max(index, 0), count - 1) };
+}
+
 // ---------------------------------------------------------------------------
 // state
 
@@ -913,6 +927,7 @@ if (typeof module !== "undefined") {
     canPreviousPage: canPreviousPage,
     canNextPage: canNextPage,
     cursorForRows: cursorForRows,
+    reconcileCursor: reconcileCursor,
     apiToWebUrl: apiToWebUrl,
     repoLink: repoLink,
     subjectLink: subjectLink,

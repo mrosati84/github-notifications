@@ -1392,6 +1392,40 @@ test("the open cursor follows the row count", () => {
   });
 });
 
+test("the row cursor is reconciled when the list shrinks under it", () => {
+  // Shrinking above the cursor leaves the row it points at selected.
+  assert.deepStrictEqual(M.reconcileCursor(4, 5, true), {
+    active: true,
+    index: 4,
+  });
+  // The row it pointed at was removed: it lands on the last row left.
+  assert.deepStrictEqual(M.reconcileCursor(4, 4, true), {
+    active: true,
+    index: 3,
+  });
+  assert.deepStrictEqual(M.reconcileCursor(4, 2, true), {
+    active: true,
+    index: 1,
+  });
+  // An emptied page has nothing to select.
+  assert.deepStrictEqual(M.reconcileCursor(3, 0, true), {
+    active: false,
+    index: 0,
+  });
+  assert.deepStrictEqual(M.reconcileCursor(2, 5, false), {
+    active: false,
+    index: 0,
+  });
+  assert.deepStrictEqual(M.reconcileCursor(undefined, 5, true), {
+    active: true,
+    index: 0,
+  });
+  assert.deepStrictEqual(M.reconcileCursor(2, -3, true), {
+    active: false,
+    index: 0,
+  });
+});
+
 // --------------------------------------------------------------------------
 // live round-trip (skipped when gh is unavailable or not signed in)
 

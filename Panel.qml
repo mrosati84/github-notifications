@@ -181,11 +181,18 @@ Panel {
     }
 
     // The list can arrive after an empty open; select its first row then.
+    // A same-page refresh can also shrink the list under a live cursor: when
+    // the row it pointed at is gone the cursor stays on the last row that is
+    // left, and it is dropped when the page empties, so the highlighted row and
+    // the row Enter/Space/`o`/`x` act on are always the same one.
     onRowCountChanged: {
         if (root.opened && root.awaitingFirstRows && root.rowCount > 0) {
             root.applyOpenCursor();
             root.scrollToFocused();
         }
+        var cursor = Model.reconcileCursor(root.focusIndex, root.rowCount, root.cursorActive);
+        root.cursorActive = cursor.active;
+        root.focusIndex = cursor.index;
     }
 
     // A new page is a new list: drop the cursor highlight and scroll back to the
