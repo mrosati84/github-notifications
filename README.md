@@ -5,12 +5,7 @@ waiting for you the GitHub mark lights up; when your inbox is quiet it dims.
 Click the mark and a small panel drops down listing what's new, so you can see at
 a glance whether anything needs your attention.
 
-<table>
-    <tr>
-    <td><img src="screenshots/notif-1.png"></td>
-    <td><img src="screenshots/notif-2.png"></td>
-    </tr>
-</table>
+![GitHub Notifications preview](preview.png)
 
 ## Install
 
